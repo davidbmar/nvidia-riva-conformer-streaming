@@ -363,7 +363,7 @@ execute_action() {
             echo -e "${BLUE}Executing: Deploy new instance${NC}"
             echo "----------------------------------------"
             # Never pass --instance-id to deploy
-            cmd=("$SCRIPT_DIR/riva-015-deploy-gpu-instance.sh")
+            cmd=("$SCRIPT_DIR/720-deploy-gpu-instance.sh")
             mapfile -t flags < <(build_common_flags)
             if [ ${#flags[@]} -gt 0 ]; then
                 cmd+=("${flags[@]}")
@@ -374,7 +374,7 @@ execute_action() {
                 exit 0
             fi
 
-            if [ -f "$SCRIPT_DIR/riva-015-deploy-gpu-instance.sh" ]; then
+            if [ -f "$SCRIPT_DIR/720-deploy-gpu-instance.sh" ]; then
                 if ! "${cmd[@]}"; then
                     local rc=$?
                     echo -e "${RED}Sub-script failed (rc=$rc)${NC}" >&2
@@ -398,7 +398,7 @@ execute_action() {
             require_instance_id "$instance_id"
             echo -e "${BLUE}Executing: Start instance${NC}"
             echo "----------------------------------------"
-            cmd=("$SCRIPT_DIR/riva-016-start-gpu-instance.sh" "--instance-id" "$instance_id")
+            cmd=("$SCRIPT_DIR/730-start-gpu-instance.sh" "--instance-id" "$instance_id")
             mapfile -t flags < <(build_common_flags)
             if [ ${#flags[@]} -gt 0 ]; then
                 cmd+=("${flags[@]}")
@@ -420,7 +420,7 @@ execute_action() {
             require_instance_id "$instance_id"
             echo -e "${BLUE}Executing: Stop instance${NC}"
             echo "----------------------------------------"
-            cmd=("$SCRIPT_DIR/riva-017-stop-gpu-instance.sh" "--instance-id" "$instance_id")
+            cmd=("$SCRIPT_DIR/740-stop-gpu-instance.sh" "--instance-id" "$instance_id")
             mapfile -t flags < <(build_common_flags)
             if [ ${#flags[@]} -gt 0 ]; then
                 cmd+=("${flags[@]}")
@@ -443,8 +443,8 @@ execute_action() {
             echo -e "${BLUE}Executing: Restart instance${NC}"
             echo "----------------------------------------"
             mapfile -t flags < <(build_common_flags)
-            cmd_stop=("$SCRIPT_DIR/riva-017-stop-gpu-instance.sh" "--instance-id" "$instance_id")
-            cmd_start=("$SCRIPT_DIR/riva-016-start-gpu-instance.sh" "--instance-id" "$instance_id")
+            cmd_stop=("$SCRIPT_DIR/740-stop-gpu-instance.sh" "--instance-id" "$instance_id")
+            cmd_start=("$SCRIPT_DIR/730-start-gpu-instance.sh" "--instance-id" "$instance_id")
             if [ ${#flags[@]} -gt 0 ]; then
                 cmd_stop+=("${flags[@]}")
                 cmd_start+=("${flags[@]}")
@@ -476,7 +476,7 @@ execute_action() {
             require_instance_id "$instance_id"
             echo -e "${BLUE}Executing: Show status${NC}"
             echo "----------------------------------------"
-            cmd=("$SCRIPT_DIR/riva-018-status-gpu-instance.sh" "--verbose" "--instance-id" "$instance_id")
+            cmd=("$SCRIPT_DIR/750-status-gpu-instance.sh" "--verbose" "--instance-id" "$instance_id")
 
             if [ "$DRY_RUN" = "true" ]; then
                 echo "Would execute: $(print_cmd "${cmd[@]}")"
@@ -500,11 +500,11 @@ execute_action() {
                 case "$current_state" in
                     "pending")
                         echo "Would execute: aws ec2 wait instance-running --instance-ids $instance_id --region ${AWS_REGION}"
-                        echo "Would execute: $(print_cmd "$SCRIPT_DIR/riva-018-status-gpu-instance.sh" "--brief" "--instance-id" "$instance_id")"
+                        echo "Would execute: $(print_cmd "$SCRIPT_DIR/750-status-gpu-instance.sh" "--brief" "--instance-id" "$instance_id")"
                         ;;
                     "stopping")
                         echo "Would execute: aws ec2 wait instance-stopped --instance-ids $instance_id --region ${AWS_REGION}"
-                        echo "Would execute: $(print_cmd "$SCRIPT_DIR/riva-018-status-gpu-instance.sh" "--brief" "--instance-id" "$instance_id")"
+                        echo "Would execute: $(print_cmd "$SCRIPT_DIR/750-status-gpu-instance.sh" "--brief" "--instance-id" "$instance_id")"
                         ;;
                 esac
                 exit 0
@@ -515,13 +515,13 @@ execute_action() {
                     echo "Waiting for instance to start..."
                     aws ec2 wait instance-running --instance-ids "$instance_id" --region "${AWS_REGION}"
                     echo -e "${GREEN}✅ Instance is now running${NC}"
-                    "$SCRIPT_DIR/riva-018-status-gpu-instance.sh" --brief --instance-id "$instance_id"
+                    "$SCRIPT_DIR/750-status-gpu-instance.sh" --brief --instance-id "$instance_id"
                     ;;
                 "stopping")
                     echo "Waiting for instance to stop..."
                     aws ec2 wait instance-stopped --instance-ids "$instance_id" --region "${AWS_REGION}"
                     echo -e "${GREEN}✅ Instance is now stopped${NC}"
-                    "$SCRIPT_DIR/riva-018-status-gpu-instance.sh" --brief --instance-id "$instance_id"
+                    "$SCRIPT_DIR/750-status-gpu-instance.sh" --brief --instance-id "$instance_id"
                     ;;
                 *)
                     echo "Instance is in state: $current_state (no waiting needed)"
