@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+exec > >(tee -a "logs/$(basename $0 .sh)-$(date +%Y%m%d-%H%M%S).log") 2>&1
 
 # ============================================================================
 # RIVA-210: Safely Shutdown GPU Instance

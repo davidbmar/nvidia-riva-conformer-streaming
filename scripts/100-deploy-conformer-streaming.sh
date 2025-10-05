@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+exec > >(tee -a "logs/$(basename $0 .sh)-$(date +%Y%m%d-%H%M%S).log") 2>&1
 
 # ============================================================================
 # RIVA-200: Deploy Conformer-CTC Streaming ASR
@@ -22,7 +23,14 @@ set -euo pipefail
 
 source "$(dirname "$0")/riva-common-functions.sh"
 load_environment
-require_env_vars "GPU_INSTANCE_IP" "NGC_API_KEY"
+
+# Validate required environment variables
+if [ -z "${GPU_INSTANCE_IP:-}" ] || [ -z "${NGC_API_KEY:-}" ]; then
+  echo "❌ ERROR: Required environment variables not set"
+  echo "   GPU_INSTANCE_IP: ${GPU_INSTANCE_IP:-NOT SET}"
+  echo "   NGC_API_KEY: ${NGC_API_KEY:-NOT SET}"
+  exit 1
+fi
 
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/dbm-sep23-2025.pem}"
 S3_RMIR="s3://dbm-cf-2-web/bintarball/riva-models/conformer/conformer-ctc-xl-streaming-40ms.rmir"

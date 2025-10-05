@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+exec > >(tee -a "logs/$(basename $0 .sh)-$(date +%Y%m%d-%H%M%S).log") 2>&1
 
 # ============================================================================
 # RIVA-211: Startup GPU and Restore Working State
@@ -75,18 +76,55 @@ CURRENT_IP=$(aws ec2 describe-instances \
 
 log_info "Current GPU IP: $CURRENT_IP"
 
-OLD_IP=$(grep "^GPU_INSTANCE_IP=" /opt/riva/nvidia-parakeet-ver-6/.env | cut -d'=' -f2)
+OLD_IP=$(grep "^GPU_INSTANCE_IP=" .env | cut -d'=' -f2)
 
 if [ "$CURRENT_IP" != "$OLD_IP" ]; then
-  log_warn "⚠️  GPU IP changed from $OLD_IP to $CURRENT_IP"
-  log_info "Updating .env file..."
+  echo ""
+  echo "╔════════════════════════════════════════════════════════════╗"
+  echo "║                                                            ║"
+  echo "║         ⚠️  CRITICAL: GPU IP ADDRESS HAS CHANGED          ║"
+  echo "║                                                            ║"
+  echo "╟────────────────────────────────────────────────────────────╢"
+  echo "║  Old IP: $OLD_IP"
+  echo "║  New IP: $CURRENT_IP"
+  echo "╟────────────────────────────────────────────────────────────╢"
+  echo "║  Actions being taken:                                      ║"
+  echo "║   1. Updating .env file with new IP                        ║"
+  echo "║   2. Exporting environment variables                       ║"
+  echo "║   3. Reloading .env configuration                          ║"
+  echo "║   4. Updating AWS security groups                          ║"
+  echo "╚════════════════════════════════════════════════════════════╝"
+  echo ""
 
-  sudo sed -i "s/^GPU_INSTANCE_IP=.*/GPU_INSTANCE_IP=$CURRENT_IP/" /opt/riva/nvidia-parakeet-ver-6/.env
-  sudo sed -i "s/^RIVA_HOST=.*/RIVA_HOST=$CURRENT_IP/" /opt/riva/nvidia-parakeet-ver-6/.env
+  log_info "Step 1/4: Updating .env file..."
+  sed -i "s/^GPU_INSTANCE_IP=.*/GPU_INSTANCE_IP=$CURRENT_IP/" .env
+  sed -i "s/^RIVA_HOST=.*/RIVA_HOST=$CURRENT_IP/" .env
+  log_success "✅ .env file updated"
 
-  log_success "✅ .env updated with new IP"
+  log_info "Step 2/4: Exporting environment variables..."
   export GPU_INSTANCE_IP="$CURRENT_IP"
   export RIVA_HOST="$CURRENT_IP"
+  log_success "✅ Variables exported for child scripts"
+
+  log_info "Step 3/4: Reloading .env configuration..."
+  load_environment
+  log_success "✅ Configuration reloaded"
+
+  log_info "Step 4/4: Updating AWS security groups..."
+  if "$(dirname "$0")/030-configure-security-groups.sh" --gpu; then
+    log_success "✅ Security groups updated successfully"
+  else
+    log_warn "⚠️  Security group update encountered issues"
+    log_info "You may need to run manually: ./scripts/030-configure-security-groups.sh --gpu"
+  fi
+
+  echo ""
+  echo "╔════════════════════════════════════════════════════════════╗"
+  echo "║                                                            ║"
+  echo "║    ✅ IP CHANGE COMPLETE - CONTINUING WITH DEPLOYMENT     ║"
+  echo "║                                                            ║"
+  echo "╚════════════════════════════════════════════════════════════╝"
+  echo ""
 else
   log_success "✅ IP unchanged: $CURRENT_IP"
 fi
@@ -157,7 +195,7 @@ if [ "$NEEDS_DEPLOY" = "true" ]; then
   echo ""
 
   # Run deployment script
-  "$(dirname "$0")/riva-200-deploy-conformer-ctc-streaming.sh"
+  "$(dirname "$0")/100-deploy-conformer-streaming.sh"
 
   log_success "✅ Deployment complete"
 else
