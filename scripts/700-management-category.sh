@@ -87,7 +87,7 @@ EXAMPLE USAGE:
 
 ═══════════════════════════════════════════════════════════════════════════
 
-NOTE: These scripts source riva-099-common.sh which provides shared
+NOTE: These scripts source riva-common-library.sh which provides shared
 functions. They have more dependencies than the simplified operations scripts.
 
 EOF

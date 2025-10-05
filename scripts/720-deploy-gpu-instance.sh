@@ -12,7 +12,7 @@ SCRIPT_VERSION="2.0.0"
 
 # Load common functions
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/riva-099-common.sh"
+source "$SCRIPT_DIR/riva-common-library.sh"
 
 # ============================================================================
 # Configuration
