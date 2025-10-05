@@ -44,10 +44,12 @@ sudo apt-get install -y \
   curl \
   wget \
   unzip \
-  awscli \
   jq \
-  netcat \
+  netcat-openbsd \
   openssl
+
+echo "Installing AWS CLI via pip..."
+python3 -m pip install --user awscli --upgrade
 
 echo "✅ System dependencies installed"
 echo ""
