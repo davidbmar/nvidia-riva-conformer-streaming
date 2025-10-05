@@ -195,7 +195,7 @@ if [ "$NEEDS_DEPLOY" = "true" ]; then
   echo ""
 
   # Run deployment script
-  "$(dirname "$0")/100-deploy-conformer-streaming.sh"
+  "$(dirname "$0")/110-deploy-conformer-streaming.sh"
 
   log_success "✅ Deployment complete"
 else
