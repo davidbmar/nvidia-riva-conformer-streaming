@@ -70,15 +70,26 @@ if [ ! -f "$SSH_KEY" ]; then
     exit 1
 fi
 
-# Get S3 repository location
-if [ -f "$PROJECT_ROOT/artifacts/s3_triton_repository" ]; then
-    S3_REPO=$(cat "$PROJECT_ROOT/artifacts/s3_triton_repository")
-elif [ -f "$PROJECT_ROOT/artifacts/s3_base_uri" ]; then
-    S3_BASE=$(cat "$PROJECT_ROOT/artifacts/s3_base_uri")
-    S3_REPO="${S3_BASE}/riva_repository/"
-else
-    echo "❌ S3 repository location not found."
-    echo "Run 100→101→102 to populate S3 cache first."
+# Get S3 repository location from .env
+if [ -z "${S3_CONFORMER_TRITON_CACHE:-}" ]; then
+    echo "❌ S3_CONFORMER_TRITON_CACHE not configured in .env"
+    echo "Run ./scripts/005-setup-configuration.sh to configure."
+    exit 1
+fi
+
+S3_REPO="$S3_CONFORMER_TRITON_CACHE"
+
+# Verify the S3 cache exists
+if ! aws s3 ls "$S3_REPO" --region "$AWS_REGION" >/dev/null 2>&1; then
+    echo "⚠️  S3 Triton cache not found at: $S3_REPO"
+    echo ""
+    echo "The cache needs to be populated first by running:"
+    echo "  ./scripts/100-prepare-conformer-s3-artifacts.sh"
+    echo "  ./scripts/101-build-conformer-triton-models.sh"
+    echo "  ./scripts/102-upload-triton-models-to-s3.sh"
+    echo ""
+    echo "This is a one-time setup that takes 30-50 minutes."
+    echo "After that, deployments will only take 2-3 minutes!"
     exit 1
 fi
 

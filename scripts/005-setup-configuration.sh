@@ -28,14 +28,15 @@ declare -A CONFIG_KEYS=(
     [5]="RIVA_MODEL"
     [6]="S3_CONFORMER_RMIR"
     [7]="S3_CONFORMER_SOURCE"
-    [8]="RIVA_PORT"
-    [9]="RIVA_HTTP_PORT"
-    [10]="RIVA_LANGUAGE_CODE"
-    [11]="NGC_API_KEY"
-    [12]="APP_PORT"
-    [13]="ENABLE_HTTPS"
-    [14]="LOG_LEVEL"
-    [15]="WS_MAX_CONNECTIONS"
+    [8]="S3_CONFORMER_TRITON_CACHE"
+    [9]="RIVA_PORT"
+    [10]="RIVA_HTTP_PORT"
+    [11]="RIVA_LANGUAGE_CODE"
+    [12]="NGC_API_KEY"
+    [13]="APP_PORT"
+    [14]="ENABLE_HTTPS"
+    [15]="LOG_LEVEL"
+    [16]="WS_MAX_CONNECTIONS"
 )
 
 # Default values
@@ -47,6 +48,7 @@ declare -A CONFIG_VALUES=(
     [RIVA_MODEL]="conformer-ctc-xl-en-us-streaming"
     [S3_CONFORMER_RMIR]="s3://dbm-cf-2-web/bintarball/riva-models/conformer/conformer-ctc-xl-streaming-40ms.rmir"
     [S3_CONFORMER_SOURCE]="s3://dbm-cf-2-web/bintarball/riva-models/conformer/Conformer-CTC-XL_spe-128_en-US_Riva-ASR-SET-4.0.riva"
+    [S3_CONFORMER_TRITON_CACHE]="s3://dbm-cf-2-web/conformer-ctc-xl/v1.0/riva_repository/"
     [RIVA_PORT]="50051"
     [RIVA_HTTP_PORT]="8000"
     [RIVA_LANGUAGE_CODE]="en-US"
@@ -66,6 +68,7 @@ declare -A CONFIG_LABELS=(
     [RIVA_MODEL]="Model Name"
     [S3_CONFORMER_RMIR]="S3 Pre-built RMIR"
     [S3_CONFORMER_SOURCE]="S3 Source Model"
+    [S3_CONFORMER_TRITON_CACHE]="S3 Triton Cache"
     [RIVA_PORT]="gRPC Port"
     [RIVA_HTTP_PORT]="HTTP Port"
     [RIVA_LANGUAGE_CODE]="Language Code"
@@ -371,6 +374,56 @@ show_help_8() {
     cat << 'EOF'
 
 ╔════════════════════════════════════════════════════════════════════════╗
+║ HELP: S3 Triton Cache                                                 ║
+╚════════════════════════════════════════════════════════════════════════╝
+
+WHAT IT IS:
+  S3 location where pre-built Triton models are cached for fast deployment.
+
+FORMAT: S3 directory path ending with /
+  s3://dbm-cf-2-web/conformer-ctc-xl/v1.0/riva_repository/
+
+CACHE PURPOSE:
+  • Scripts 100-102: UPLOAD Triton models here (one-time, 30-50 min)
+  • Script 125: DOWNLOAD from here (fast, 2-3 min)
+  • Reusable across multiple GPU instances
+
+WHAT GETS CACHED:
+  • Pre-built Triton model files (output of riva-deploy)
+  • Model directories (encoder, decoder, streaming components)
+  • Configuration files (config.pbtxt, etc.)
+  • Total size: ~2-4 GB
+
+TWO DEPLOYMENT MODES:
+  Mode 1: Fast (use cache)
+    → Script 125 downloads from this location
+    → 2-3 min deployment
+    → Requires scripts 100-102 run once first
+
+  Mode 2: Fresh build
+    → Uses S3_CONFORMER_RMIR (#6) or S3_CONFORMER_SOURCE (#7)
+    → Runs riva-build + riva-deploy each time
+    → 30-50 min deployment
+
+WHEN TO CHANGE:
+  • Different model version
+  • Different S3 bucket/region
+  • Custom cache organization
+
+RELATIONSHIP TO OTHER SETTINGS:
+  RMIR (#6)         → Input for building Triton models
+  Source (#7)       → Alternative input (slower)
+  Triton Cache (#8) → Output/storage for fast redeployment ⭐
+
+Press Enter to continue...
+EOF
+    read
+}
+
+show_help_9() {
+    cat << 'EOF'
+
+╔════════════════════════════════════════════════════════════════════════╗
 ║ HELP: gRPC Port                                                       ║
 ╚════════════════════════════════════════════════════════════════════════╝
 
@@ -413,7 +466,7 @@ EOF
     read
 }
 
-show_help_9() {
+show_help_10() {
     cat << 'EOF'
 
 ╔════════════════════════════════════════════════════════════════════════╗
@@ -458,7 +511,7 @@ EOF
     read
 }
 
-show_help_10() {
+show_help_11() {
     cat << 'EOF'
 
 ╔════════════════════════════════════════════════════════════════════════╗
@@ -510,7 +563,7 @@ EOF
     read
 }
 
-show_help_11() {
+show_help_12() {
     cat << 'EOF'
 
 ╔════════════════════════════════════════════════════════════════════════╗
@@ -560,7 +613,7 @@ EOF
     read
 }
 
-show_help_12() {
+show_help_13() {
     cat << 'EOF'
 
 ╔════════════════════════════════════════════════════════════════════════╗
@@ -614,7 +667,7 @@ EOF
     read
 }
 
-show_help_13() {
+show_help_14() {
     cat << 'EOF'
 
 ╔════════════════════════════════════════════════════════════════════════╗
@@ -673,7 +726,7 @@ EOF
     read
 }
 
-show_help_14() {
+show_help_15() {
     cat << 'EOF'
 
 ╔════════════════════════════════════════════════════════════════════════╗
@@ -737,7 +790,7 @@ EOF
     read
 }
 
-show_help_15() {
+show_help_16() {
     cat << 'EOF'
 
 ╔════════════════════════════════════════════════════════════════════════╗
@@ -810,7 +863,7 @@ show_model_info() {
 ║ INFO: Understanding Model Files and Relationships                     ║
 ╚════════════════════════════════════════════════════════════════════════╝
 
-There are THREE related settings for the Conformer model:
+There are FOUR related settings for the Conformer model:
 
 ┌────────────────────────────────────────────────────────────────────────┐
 │ #5: MODEL NAME (API identifier)                                       │
@@ -844,6 +897,18 @@ There are THREE related settings for the Conformer model:
 │     • Total deployment time: 35-55 minutes                            │
 │     • File size: ~1.5 GB (source) → ~2 GB (RMIR)                      │
 │     • Use when you need to verify build or modify model               │
+└────────────────────────────────────────────────────────────────────────┘
+                                   ↓
+┌────────────────────────────────────────────────────────────────────────┐
+│ #8: S3 TRITON CACHE (FASTEST redeployment - 2-3 min!) ⚡              │
+│     s3://.../conformer-ctc-xl/v1.0/riva_repository/                    │
+│                                                                        │
+│     • Pre-built Triton models ready for instant loading               │
+│     • Cached output from riva-build + riva-deploy                     │
+│     • Deployment time: 2-3 minutes (vs 30-50 min rebuilding!)         │
+│     • Used by script 125-deploy-conformer-from-s3-cache.sh            │
+│     • Enables 60-70% faster redeployments                             │
+│     • Populated by running scripts 100→101→102 (one-time)             │
 └────────────────────────────────────────────────────────────────────────┘
 
 DEPLOYMENT FLOW:
@@ -912,7 +977,7 @@ Welcome! This tool helps you configure your Riva ASR deployment.
 HOW IT WORKS:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  1. You'll see all 15 configuration settings with smart defaults
+  1. You'll see all 16 configuration settings with smart defaults
   2. Review the values
   3. Edit only what you need to change
   4. Save and you're ready to deploy!
@@ -940,7 +1005,7 @@ MOST USERS ONLY NEED TO CHANGE:
 
   #2  AWS Account ID      → Use YOUR 12-digit account ID
   #4  SSH Key Name        → Use YOUR existing EC2 key pair name
-  #11 NGC API Key         → Optional, for pulling NVIDIA containers
+  #12 NGC API Key         → Optional, for pulling NVIDIA containers
 
   All other defaults are production-ready! ✅
 
@@ -965,6 +1030,9 @@ get_display_value() {
             ;;
         S3_CONFORMER_SOURCE)
             echo "s3://.../conformer/$(basename "$value")"
+            ;;
+        S3_CONFORMER_TRITON_CACHE)
+            echo "s3://.../conformer/riva_repository/"
             ;;
         NGC_API_KEY)
             if [ -z "$value" ]; then
@@ -1003,25 +1071,26 @@ EOF
     printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "5" "${CONFIG_LABELS[RIVA_MODEL]}" "$(get_display_value RIVA_MODEL)"
     printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "6" "${CONFIG_LABELS[S3_CONFORMER_RMIR]}" "$(get_display_value S3_CONFORMER_RMIR)"
     printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "7" "${CONFIG_LABELS[S3_CONFORMER_SOURCE]}" "$(get_display_value S3_CONFORMER_SOURCE)"
-    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "8" "${CONFIG_LABELS[RIVA_PORT]}" "$(get_display_value RIVA_PORT)"
-    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "9" "${CONFIG_LABELS[RIVA_HTTP_PORT]}" "$(get_display_value RIVA_HTTP_PORT)"
-    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "10" "${CONFIG_LABELS[RIVA_LANGUAGE_CODE]}" "$(get_display_value RIVA_LANGUAGE_CODE)"
+    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "8" "${CONFIG_LABELS[S3_CONFORMER_TRITON_CACHE]}" "$(get_display_value S3_CONFORMER_TRITON_CACHE)"
+    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "9" "${CONFIG_LABELS[RIVA_PORT]}" "$(get_display_value RIVA_PORT)"
+    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "10" "${CONFIG_LABELS[RIVA_HTTP_PORT]}" "$(get_display_value RIVA_HTTP_PORT)"
+    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "11" "${CONFIG_LABELS[RIVA_LANGUAGE_CODE]}" "$(get_display_value RIVA_LANGUAGE_CODE)"
     echo ""
 
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "OPTIONAL CONFIGURATION"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "11" "${CONFIG_LABELS[NGC_API_KEY]}" "$(get_display_value NGC_API_KEY)"
-    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "12" "${CONFIG_LABELS[APP_PORT]}" "$(get_display_value APP_PORT)"
-    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "13" "${CONFIG_LABELS[ENABLE_HTTPS]}" "$(get_display_value ENABLE_HTTPS)"
-    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "14" "${CONFIG_LABELS[LOG_LEVEL]}" "$(get_display_value LOG_LEVEL)"
-    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "15" "${CONFIG_LABELS[WS_MAX_CONNECTIONS]}" "$(get_display_value WS_MAX_CONNECTIONS)"
+    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "12" "${CONFIG_LABELS[NGC_API_KEY]}" "$(get_display_value NGC_API_KEY)"
+    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "13" "${CONFIG_LABELS[APP_PORT]}" "$(get_display_value APP_PORT)"
+    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "14" "${CONFIG_LABELS[ENABLE_HTTPS]}" "$(get_display_value ENABLE_HTTPS)"
+    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "15" "${CONFIG_LABELS[LOG_LEVEL]}" "$(get_display_value LOG_LEVEL)"
+    printf " ${CYAN}%-2s${NC}. %-25s ${BOLD}%s${NC}\n" "16" "${CONFIG_LABELS[WS_MAX_CONNECTIONS]}" "$(get_display_value WS_MAX_CONNECTIONS)"
     echo ""
 
     echo "┌────────────────────────────────────────────────────────────────────────┐"
     echo -e "│ ${BOLD}COMMANDS:${NC}                                                            │"
-    echo -e "│   ${CYAN}1-15${NC}        Edit that setting (e.g., \"${CYAN}3${NC}\" to edit GPU type)        │"
-    echo -e "│   ${CYAN}?1-?15${NC}      Show detailed help (e.g., \"${CYAN}?7${NC}\" for S3 Source help)    │"
+    echo -e "│   ${CYAN}1-16${NC}        Edit that setting (e.g., \"${CYAN}3${NC}\" to edit GPU type)        │"
+    echo -e "│   ${CYAN}?1-?16${NC}      Show detailed help (e.g., \"${CYAN}?7${NC}\" for S3 Source help)    │"
     echo -e "│   ${CYAN}i${NC}           Info about model file relationships                   │"
     echo -e "│   ${CYAN}a${NC}           Accept all and create .env file                       │"
     echo -e "│   ${CYAN}q${NC}           Quit without saving                                   │"
@@ -1170,11 +1239,11 @@ while true; do
 
     # Parse command
     case $command in
-        [1-9]|1[0-5])
+        [1-9]|1[0-6])
             # Edit setting
             edit_setting "$command"
             ;;
-        \?[1-9]|\?1[0-5])
+        \?[1-9]|\?1[0-6])
             # Show help
             help_num="${command:1}"
             "show_help_$help_num"
@@ -1201,8 +1270,8 @@ while true; do
             echo -e "${RED}❌ Invalid command: '$command'${NC}"
             echo ""
             echo "Valid commands:"
-            echo "  • 1-15      Edit a setting (e.g., '3')"
-            echo "  • ?1-?15    Show help (e.g., '?7')"
+            echo "  • 1-16      Edit a setting (e.g., '3')"
+            echo "  • ?1-?16    Show help (e.g., '?7')"
             echo "  • i         Model info"
             echo "  • a         Accept and save"
             echo "  • q         Quit"
@@ -1270,6 +1339,7 @@ RIVA_ENABLE_WORD_TIME_OFFSETS=true
 # ============================================================================
 S3_CONFORMER_RMIR=${CONFIG_VALUES[S3_CONFORMER_RMIR]}
 S3_CONFORMER_SOURCE=${CONFIG_VALUES[S3_CONFORMER_SOURCE]}
+S3_CONFORMER_TRITON_CACHE=${CONFIG_VALUES[S3_CONFORMER_TRITON_CACHE]}
 
 # ============================================================================
 # NVIDIA NGC

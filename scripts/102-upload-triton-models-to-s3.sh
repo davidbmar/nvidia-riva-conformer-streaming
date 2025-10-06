@@ -42,6 +42,7 @@ REQUIRED_VARS=(
     "AWS_REGION"
     "GPU_INSTANCE_IP"
     "SSH_KEY_NAME"
+    "S3_CONFORMER_TRITON_CACHE"
 )
 
 for var in "${REQUIRED_VARS[@]}"; do
@@ -63,18 +64,18 @@ if [ ! -f "$SSH_KEY" ]; then
     exit 1
 fi
 
-# Load S3 base from previous step
-if [ ! -f "$PROJECT_ROOT/artifacts/s3_base_uri" ]; then
-    echo "❌ S3 base URI not found. Run 100-prepare-conformer-s3-artifacts.sh first."
-    exit 1
+# Use S3 Triton cache from .env
+# Extract base URI (everything before /riva_repository/)
+S3_BASE="${S3_CONFORMER_TRITON_CACHE%/riva_repository/*}"
+if [ "$S3_BASE" = "$S3_CONFORMER_TRITON_CACHE" ]; then
+    # If riva_repository/ not found, remove trailing slash
+    S3_BASE="${S3_CONFORMER_TRITON_CACHE%/}"
 fi
-
-S3_BASE=$(cat "$PROJECT_ROOT/artifacts/s3_base_uri")
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 echo "Configuration:"
 echo "  • GPU Instance: $GPU_INSTANCE_IP"
-echo "  • S3 Destination: ${S3_BASE}/riva_repository/"
+echo "  • S3 Destination: $S3_CONFORMER_TRITON_CACHE"
 echo "  • Temp Directory: $TEMP_DIR"
 echo ""
 
@@ -150,13 +151,13 @@ echo ""
 # Step 3: Upload to S3
 # ============================================================================
 echo "Step 3/4: Uploading Triton models to S3..."
-echo "Destination: ${S3_BASE}/riva_repository/"
+echo "Destination: $S3_CONFORMER_TRITON_CACHE"
 echo ""
 
 UPLOAD_START=$(date +%s)
 
 # Upload the entire repository directory
-if aws s3 sync "$TEMP_DIR/" "${S3_BASE}/riva_repository/" \
+if aws s3 sync "$TEMP_DIR/" "$S3_CONFORMER_TRITON_CACHE" \
     --region "$AWS_REGION" \
     --delete; then
     UPLOAD_END=$(date +%s)
@@ -193,7 +194,7 @@ cat > "$COMPLETION_FILE" << EOF
     "ms_per_timestep": 40
   },
   "triton_repository": {
-    "s3_uri": "${S3_BASE}/riva_repository/",
+    "s3_uri": "${S3_CONFORMER_TRITON_CACHE}",
     "model_count": ${MODEL_COUNT},
     "size_mb": ${TOTAL_SIZE_MB}
   },
@@ -210,16 +211,13 @@ cat > "$COMPLETION_FILE" << EOF
 }
 EOF
 
-# Upload completion manifest
+# Upload completion manifest to S3 base (parent of riva_repository/)
 aws s3 cp "$COMPLETION_FILE" "${S3_BASE}/s3_cache_complete.json" \
     --content-type "application/json" \
     --region "$AWS_REGION"
 
 echo "✅ Completion manifest uploaded"
 echo ""
-
-# Save S3 repository location for fast deploy
-echo "${S3_BASE}/riva_repository/" > "$PROJECT_ROOT/artifacts/s3_triton_repository"
 
 # Cleanup
 rm -rf "$TEMP_DIR"
@@ -231,7 +229,7 @@ echo "========================================="
 echo "✅ S3 CACHE POPULATED"
 echo "========================================="
 echo ""
-echo "S3 Location: ${S3_BASE}/riva_repository/"
+echo "S3 Location: $S3_CONFORMER_TRITON_CACHE"
 echo "Model Count: $MODEL_COUNT directories"
 echo "Total Size: ${TOTAL_SIZE_MB}MB"
 echo ""
