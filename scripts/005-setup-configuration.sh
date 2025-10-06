@@ -159,7 +159,7 @@ echo ""
 echo -e "${GREEN}=== Riva ASR Configuration ===${NC}"
 prompt_with_default "Riva gRPC Port" "50051" RIVA_PORT
 prompt_with_default "Riva HTTP Port" "8000" RIVA_HTTP_PORT
-prompt_with_default "Riva Model (conformer_en_US_parakeet_rnnt)" "conformer_en_US_parakeet_rnnt" RIVA_MODEL
+prompt_with_default "Riva Model (conformer-ctc-xl-en-us-streaming)" "conformer-ctc-xl-en-us-streaming" RIVA_MODEL
 prompt_with_default "Language Code" "en-US" RIVA_LANGUAGE_CODE
 
 # SSL Configuration
