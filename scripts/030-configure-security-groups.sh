@@ -2,8 +2,9 @@
 set -e
 exec > >(tee -a "logs/$(basename $0 .sh)-$(date +%Y%m%d-%H%M%S).log") 2>&1
 
-# Enhanced NVIDIA Parakeet Riva ASR Security Group Configuration
-# This script provides better IP management with add/delete capabilities
+# NVIDIA Riva Conformer-CTC ASR Security Group Configuration
+# Configures AWS security groups for GPU instance and buildbox
+# This script provides IP management with add/delete capabilities
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -107,9 +108,9 @@ else
         IFS=',' read -ra PORTS <<< "$GPU_SG_PORTS"
         IFS=',' read -ra PORT_DESCRIPTIONS <<< "$GPU_SG_PORT_DESCRIPTIONS"
     else
-        # Fallback to defaults
-        PORTS=(22 50051 8000 9000 9090)
-        PORT_DESCRIPTIONS=("SSH" "Riva gRPC" "Riva HTTP" "NIM gRPC" "Metrics")
+        # Fallback to defaults for Conformer-CTC with Riva
+        PORTS=(22 50051 8000 9090)
+        PORT_DESCRIPTIONS=("SSH" "Riva gRPC" "Riva HTTP/Health" "Metrics")
     fi
 fi
 
@@ -152,10 +153,6 @@ display_port_info() {
             8444)
                 echo -e "${GREEN}Port $port - $desc${NC}"
                 echo "  └─ Secure HTTPS demo page that lets your browser use the microphone"
-                ;;
-            9000)
-                echo -e "${GREEN}Port $port - $desc${NC}"
-                echo "  └─ NIM (alternative AI inference service) communication channel"
                 ;;
             9090)
                 echo -e "${GREEN}Port $port - $desc${NC}"
@@ -529,9 +526,15 @@ echo "  • Changes may take 30-60 seconds to propagate"
 echo "  • To modify IPs later, run this script again"
 echo ""
 echo -e "${CYAN}Next Steps:${NC}"
-echo "1. Restart NIM container if needed: docker restart parakeet-nim-s3-unified"
-echo "2. Test RIVA connectivity: python3 test_ec2_riva.py"
-echo "3. Start WebSocket bridge: cd /opt/riva-ws && python3 bin/riva_websocket_bridge.py"
-echo "4. Start demo server: python3 -m http.server 8080"
-echo "5. Access browser demo: http://[your-public-ip]:8080/static/demo.html"
+if [ "$TARGET_MODE" == "buildbox" ]; then
+    echo "1. Access WebSocket demo: https://${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}:8444/demo.html"
+    echo "2. Access HTTP demo: http://${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}:8080/demo.html"
+    echo "3. WebSocket bridge status: sudo systemctl status riva-websocket-bridge"
+else
+    echo "1. Deploy Conformer-CTC model: ./scripts/110-deploy-conformer-streaming.sh"
+    echo "2. Check GPU instance status: ./scripts/750-status-gpu-instance.sh"
+    echo "3. Test Riva connectivity: grpcurl -plaintext ${GPU_INSTANCE_IP:-<gpu-ip>}:50051 list"
+    echo "4. View Riva metrics: curl http://${GPU_INSTANCE_IP:-<gpu-ip>}:8000/metrics"
+    echo "5. SSH to GPU instance: ssh -i ~/.ssh/$SSH_KEY_NAME.pem ubuntu@${GPU_INSTANCE_IP:-<gpu-ip>}"
+fi
 echo "================================================================"
