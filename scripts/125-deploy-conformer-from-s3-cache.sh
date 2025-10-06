@@ -234,20 +234,41 @@ ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
     "RIVA_VERSION='${RIVA_VERSION}' RIVA_PORT='${RIVA_PORT}' RIVA_HTTP_PORT='${RIVA_HTTP_PORT}'" << 'START_SCRIPT'
 set -euo pipefail
 
-echo "Starting RIVA server with start-riva command..."
-echo "Command: docker run -d --gpus all --name riva-server -p ${RIVA_PORT}:50051 -p ${RIVA_HTTP_PORT}:8000 ..."
+echo "Starting RIVA server with 8GB CUDA memory pool..."
+echo "Note: Conformer-CTC requires 8GB CUDA memory (default 1GB causes out-of-memory errors)"
 
-docker run -d --rm --gpus all --name riva-server \
+# Stop any existing container
+docker stop riva-server 2>/dev/null || true
+docker rm riva-server 2>/dev/null || true
+
+# Start with manual tritonserver + riva_server to control CUDA memory
+docker run -d --gpus all --name riva-server \
     -p ${RIVA_PORT}:50051 \
     -p ${RIVA_HTTP_PORT}:8000 \
     -p 8001:8001 \
     -p 8002:8002 \
     -v /opt/riva/models_conformer_fast:/data/models \
     nvcr.io/nvidia/riva/riva-speech:${RIVA_VERSION} \
-    start-riva \
-        --asr_service=true \
-        --nlp_service=false \
-        --tts_service=false
+    bash -c '
+        # Start Triton with 8GB CUDA memory pool (Conformer needs >1GB)
+        tritonserver \
+            --model-repository=/data/models \
+            --cuda-memory-pool-byte-size=0:8000000000 \
+            --log-verbose=0 \
+            --log-info=true \
+            --exit-on-error=false &
+
+        # Wait for models to load
+        sleep 20
+
+        # Start RIVA gRPC server
+        /opt/riva/bin/riva_server \
+            --asr_service=true \
+            --nlp_service=false \
+            --tts_service=false &
+
+        wait
+    '
 
 # Wait a moment for container to initialize
 sleep 3
