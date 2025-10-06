@@ -47,6 +47,7 @@ REQUIRED_VARS=(
     "SSH_KEY_NAME"
     "RIVA_PORT"
     "RIVA_HTTP_PORT"
+    "NGC_API_KEY"
 )
 
 for var in "${REQUIRED_VARS[@]}"; do
@@ -62,7 +63,7 @@ SSH_OPTS="-i $SSH_KEY -o ConnectTimeout=10 -o StrictHostKeyChecking=no"
 REMOTE_USER="ubuntu"
 TEMP_DIR="/tmp/conformer-deploy-$$"
 RIVA_VERSION="2.19.0"
-READY_TIMEOUT=60
+READY_TIMEOUT=180
 
 # Verify SSH key exists
 if [ ! -f "$SSH_KEY" ]; then
@@ -181,9 +182,51 @@ fi
 echo ""
 
 # ============================================================================
-# Step 4: Start RIVA server
+# Step 4: Configure NGC access for Docker
 # ============================================================================
-echo "Step 4/5: Starting RIVA server..."
+echo "Step 4/6: Configuring NGC access..."
+
+# Check if NGC API key is set
+if [ -z "${NGC_API_KEY:-}" ]; then
+    echo "❌ NGC_API_KEY not set in .env"
+    echo "NVIDIA Container Registry access is required to pull RIVA images."
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
+
+# Login to NGC on GPU instance
+ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
+    "NGC_API_KEY='${NGC_API_KEY}'" << 'NGC_LOGIN'
+set -euo pipefail
+
+# Check if already logged in
+if docker images | grep -q "nvcr.io/nvidia/riva/riva-speech"; then
+    echo "✅ RIVA image already available"
+else
+    echo "Logging into NVIDIA NGC..."
+    echo "$NGC_API_KEY" | docker login nvcr.io --username '$oauthtoken' --password-stdin >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        echo "✅ NGC login successful"
+    else
+        echo "❌ NGC login failed"
+        exit 1
+    fi
+fi
+NGC_LOGIN
+
+if [ $? -ne 0 ]; then
+    echo "❌ Failed to configure NGC access"
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
+
+echo "✅ NGC access configured"
+echo ""
+
+# ============================================================================
+# Step 5: Start RIVA server
+# ============================================================================
+echo "Step 5/6: Starting RIVA server..."
 
 START_START=$(date +%s)
 
@@ -234,9 +277,9 @@ echo "✅ RIVA server started in ${START_DURATION}s"
 echo ""
 
 # ============================================================================
-# Step 5: Wait for RIVA ready
+# Step 6: Wait for RIVA ready
 # ============================================================================
-echo "Step 5/5: Waiting for RIVA server to be ready..."
+echo "Step 6/6: Waiting for RIVA server to be ready..."
 echo "Timeout: ${READY_TIMEOUT}s"
 echo ""
 
