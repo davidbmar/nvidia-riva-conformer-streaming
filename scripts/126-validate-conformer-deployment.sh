@@ -95,8 +95,8 @@ echo ""
 echo "Check 2/5: Model List and Status"
 echo "─────────────────────────────────────────"
 
-# Get model list
-MODEL_LIST=$(curl -sf "http://${GPU_INSTANCE_IP}:${RIVA_HTTP_PORT}/v2/models" 2>/dev/null || echo "[]")
+# Get model list (using repository/index endpoint - requires POST)
+MODEL_LIST=$(curl -sf -X POST "http://${GPU_INSTANCE_IP}:${RIVA_HTTP_PORT}/v2/repository/index" 2>/dev/null || echo "[]")
 
 if [ "$MODEL_LIST" != "[]" ]; then
     echo "Loaded models:"
