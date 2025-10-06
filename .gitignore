@@ -1,10 +1,14 @@
 # Environment and secrets
 .env
+.env.*
 *.pem
 *.key
 !server.key
 *.crt
 !server.crt
+
+# Runtime state
+artifacts/
 
 # Python
 __pycache__/
