@@ -101,23 +101,29 @@ case $DEPLOYMENT_STRATEGY in
         # AWS Configuration for new EC2 instance
         echo ""
         echo -e "${GREEN}=== AWS Configuration ===${NC}"
-        prompt_with_default "AWS Region" "us-east-2" AWS_REGION
-        prompt_with_default "AWS Account ID (12 digits)" "" AWS_ACCOUNT_ID
-        
+        echo "The GPU worker will be deployed as an EC2 instance in your AWS account."
+        echo ""
+        prompt_with_default "AWS Region (where to deploy GPU instance)" "us-east-2" AWS_REGION
+        prompt_with_default "AWS Account ID (12 digits, from AWS console)" "821850226835" AWS_ACCOUNT_ID
+
         # Validate AWS Account ID
         while ! validate_aws_account_id "$AWS_ACCOUNT_ID"; do
-            prompt_with_default "AWS Account ID (12 digits)" "" AWS_ACCOUNT_ID
+            prompt_with_default "AWS Account ID (12 digits, from AWS console)" "821850226835" AWS_ACCOUNT_ID
         done
-        
+
         echo ""
-        echo "Recommended GPU instance types for Riva:"
-        echo "  • g4dn.xlarge  - Tesla T4, 4 vCPU, 16GB RAM (cost-effective)"
-        echo "  • g4dn.2xlarge - Tesla T4, 8 vCPU, 32GB RAM (recommended)"
-        echo "  • g5.xlarge    - A10G GPU, 4 vCPU, 16GB RAM (best performance)"
-        echo "  • p3.2xlarge   - Tesla V100, 8 vCPU, 61GB RAM (high performance)"
+        echo "GPU instance type determines cost and performance:"
+        echo "  • g4dn.xlarge  - Tesla T4, 4 vCPU, 16GB RAM (~\$0.526/hr) [RECOMMENDED]"
+        echo "  • g4dn.2xlarge - Tesla T4, 8 vCPU, 32GB RAM (~\$0.752/hr)"
+        echo "  • g5.xlarge    - A10G GPU, 4 vCPU, 16GB RAM (~\$1.006/hr)"
+        echo "  • p3.2xlarge   - Tesla V100, 8 vCPU, 61GB RAM (~\$3.06/hr)"
         echo ""
-        prompt_with_default "GPU Instance Type" "g4dn.2xlarge" GPU_INSTANCE_TYPE
-        prompt_with_default "Key Pair Name (for SSH access)" "" SSH_KEY_NAME
+        prompt_with_default "GPU Instance Type (affects hourly cost)" "g4dn.xlarge" GPU_INSTANCE_TYPE
+
+        echo ""
+        echo "SSH key pair is needed to connect to the GPU instance for debugging."
+        echo "Use an existing key name from your AWS EC2 console (without .pem extension)."
+        prompt_with_default "SSH Key Pair Name (e.g., dbm-oct5-2025)" "dbm-oct5-2025" SSH_KEY_NAME
         
         RIVA_HOST_TYPE="aws_ec2"
         RIVA_HOST="auto_detected"  # Will be set after instance creation
@@ -157,14 +163,22 @@ esac
 # Riva Configuration
 echo ""
 echo -e "${GREEN}=== Riva ASR Configuration ===${NC}"
-prompt_with_default "Riva gRPC Port" "50051" RIVA_PORT
-prompt_with_default "Riva HTTP Port" "8000" RIVA_HTTP_PORT
-prompt_with_default "Riva Model (conformer-ctc-xl-en-us-streaming)" "conformer-ctc-xl-en-us-streaming" RIVA_MODEL
-prompt_with_default "Language Code" "en-US" RIVA_LANGUAGE_CODE
+echo "These ports are where the RIVA server will listen on the GPU instance."
+echo ""
+prompt_with_default "Riva gRPC Port (for streaming audio)" "50051" RIVA_PORT
+prompt_with_default "Riva HTTP Port (for REST API and health checks)" "8000" RIVA_HTTP_PORT
+
+echo ""
+echo "Riva model determines the ASR accuracy and language support."
+echo "Conformer-CTC provides excellent accuracy for English streaming transcription."
+echo ""
+prompt_with_default "Riva Model Name" "conformer-ctc-xl-en-us-streaming" RIVA_MODEL
+prompt_with_default "Language Code (en-US, es-US, etc.)" "en-US" RIVA_LANGUAGE_CODE
 
 # SSL Configuration
 echo ""
 echo -e "${GREEN}=== SSL/Security Configuration ===${NC}"
+echo "SSL between build box and GPU is usually not needed (private network)."
 prompt_with_default "Enable SSL for Riva connection [y/N]" "N" ENABLE_RIVA_SSL
 if [[ "$ENABLE_RIVA_SSL" =~ ^[Yy]$ ]]; then
     RIVA_SSL="true"
@@ -178,14 +192,19 @@ fi
 
 # NVIDIA NGC Configuration
 echo ""
-echo -e "${GREEN}=== NVIDIA NGC Configuration (Optional) ===${NC}"
-echo "NGC API key is needed for downloading some Riva models"
-prompt_with_default "NGC API Key (optional)" "" NGC_API_KEY true
+echo -e "${GREEN}=== NVIDIA NGC Configuration ===${NC}"
+echo "NGC API key is used to pull NVIDIA containers and download models."
+echo "Get your key from: https://catalog.ngc.nvidia.com/ → Generate API Key"
+echo "Press Enter to skip if you don't have one yet (can add later to .env)"
+echo ""
+prompt_with_default "NGC API Key (optional, hidden input)" "" NGC_API_KEY true
 
 # Application Server Configuration
 echo ""
 echo -e "${GREEN}=== WebSocket Server Configuration ===${NC}"
-prompt_with_default "Application Server Port" "8443" APP_PORT
+echo "The WebSocket bridge runs on the build box and connects browsers to RIVA."
+echo ""
+prompt_with_default "WebSocket Server Port (for browser connections)" "8443" APP_PORT
 prompt_with_default "Enable HTTPS for WebSocket server [y/N]" "y" ENABLE_APP_SSL
 if [[ "$ENABLE_APP_SSL" =~ ^[Yy]$ ]]; then
     APP_SSL_CERT="/opt/riva/certs/server.crt"
@@ -198,9 +217,11 @@ fi
 # Performance and Monitoring
 echo ""
 echo -e "${GREEN}=== Performance & Monitoring ===${NC}"
-prompt_with_default "Log Level (DEBUG/INFO/WARNING/ERROR)" "INFO" LOG_LEVEL
-prompt_with_default "Enable Prometheus Metrics [y/N]" "y" ENABLE_METRICS
-prompt_with_default "Max WebSocket Connections" "100" WS_MAX_CONNECTIONS
+echo "These settings control logging detail and system monitoring."
+echo ""
+prompt_with_default "Log Level (DEBUG for troubleshooting, INFO for normal)" "INFO" LOG_LEVEL
+prompt_with_default "Enable Prometheus Metrics (for monitoring) [y/N]" "y" ENABLE_METRICS
+prompt_with_default "Max WebSocket Connections (concurrent browsers)" "100" WS_MAX_CONNECTIONS
 
 # Generate timestamp
 DEPLOYMENT_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
