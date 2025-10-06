@@ -250,6 +250,12 @@ RIVA_ENABLE_AUTOMATIC_PUNCTUATION=true
 RIVA_ENABLE_WORD_TIME_OFFSETS=true
 
 # ============================================================================
+# S3 Model Paths (for Conformer-CTC Streaming)
+# ============================================================================
+S3_CONFORMER_RMIR=s3://dbm-cf-2-web/bintarball/riva-models/conformer/conformer-ctc-xl-streaming-40ms.rmir
+S3_CONFORMER_SOURCE=s3://dbm-cf-2-web/bintarball/riva-models/conformer/Conformer-CTC-XL_spe-128_en-US_Riva-ASR-SET-4.0.riva
+
+# ============================================================================
 # NVIDIA NGC
 # ============================================================================
 NGC_API_KEY=$NGC_API_KEY
@@ -352,10 +358,11 @@ echo ""
 echo -e "${GREEN}🎯 Next Steps:${NC}"
 case $DEPLOYMENT_STRATEGY in
     1)
-        echo "1. Deploy GPU instance: ./scripts/riva-015-deploy-or-restart-aws-gpu-instance.sh"
-        echo "2. Setup Riva server: ./scripts/riva-020-setup-riva-server.sh"
-        echo "3. Deploy WebSocket app: ./scripts/riva-030-deploy-websocket-app.sh"
-        echo "4. Test system: ./scripts/riva-040-test-system.sh"
+        echo "1. Install build box dependencies: ./scripts/010-setup-build-box.sh"
+        echo "2. Deploy GPU instance: ./scripts/020-deploy-gpu-instance.sh"
+        echo "3. Configure security groups: ./scripts/030-configure-security-groups.sh"
+        echo "4. Deploy Conformer-CTC model: ./scripts/110-deploy-conformer-streaming.sh"
+        echo "5. Test: https://<BUILDBOX-IP>:8444/demo.html"
         ;;
     2)
         echo "1. Setup Riva on existing server: ./scripts/riva-020-setup-riva-server.sh"
