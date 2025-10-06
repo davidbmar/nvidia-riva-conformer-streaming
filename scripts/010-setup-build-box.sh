@@ -48,8 +48,17 @@ sudo apt-get install -y \
   netcat-openbsd \
   openssl
 
-echo "Installing AWS CLI via pip..."
-python3 -m pip install --user awscli --upgrade
+echo "Checking AWS CLI installation..."
+if command -v aws &> /dev/null; then
+  echo "✅ AWS CLI already installed: $(aws --version)"
+else
+  echo "Installing AWS CLI via apt..."
+  sudo apt-get install -y awscli
+  if ! command -v aws &> /dev/null; then
+    echo "⚠️  apt installation didn't work, trying pip with --break-system-packages..."
+    python3 -m pip install --user awscli --upgrade --break-system-packages
+  fi
+fi
 
 echo "✅ System dependencies installed"
 echo ""
@@ -112,10 +121,11 @@ echo "Step 5/7: Installing Python dependencies..."
 pip install --upgrade pip setuptools wheel
 
 # Core dependencies
+# Note: nvidia-riva-client 2.19.0 requires grpcio==1.67.1
 pip install \
   nvidia-riva-client==2.19.0 \
-  grpcio==1.60.0 \
-  grpcio-tools==1.60.0 \
+  grpcio==1.67.1 \
+  grpcio-tools==1.67.1 \
   websockets==12.0 \
   python-dotenv==1.0.0 \
   boto3==1.34.0 \
