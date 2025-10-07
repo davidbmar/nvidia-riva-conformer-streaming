@@ -21,6 +21,15 @@ NC='\033[0m' # No Color
 
 echo -e "${BLUE}🔒 Enhanced Security Group Configuration${NC}"
 echo "================================================================"
+echo ""
+echo -e "${CYAN}Architecture Overview:${NC}"
+echo "  • GPU Worker: Runs NVIDIA Riva (ports 22, 50051, 8000)"
+echo "  • Build Box: Runs WebSocket bridge & demo (ports 22, 8443, 8444)"
+echo ""
+echo -e "${YELLOW}Note:${NC} Run this script twice:"
+echo "  1. ./scripts/030-configure-security-groups.sh --gpu"
+echo "  2. ./scripts/030-configure-security-groups.sh --buildbox"
+echo "================================================================"
 
 # Check if configuration exists
 if [ ! -f "$ENV_FILE" ]; then
@@ -88,10 +97,12 @@ if [ "$TARGET_MODE" == "buildbox" ]; then
     if [[ -n "${BUILDBOX_SG_PORTS:-}" ]]; then
         IFS=',' read -ra PORTS <<< "$BUILDBOX_SG_PORTS"
         IFS=',' read -ra PORT_DESCRIPTIONS <<< "$BUILDBOX_SG_PORT_DESCRIPTIONS"
+        IFS=',' read -ra PUBLIC_PORTS <<< "${BUILDBOX_SG_PUBLIC_PORTS:-}"
     else
         # Fallback to defaults
-        PORTS=(22 8080 8443 8444)
-        PORT_DESCRIPTIONS=("SSH" "HTTP Demo" "WebSocket Bridge" "HTTPS Demo")
+        PORTS=(22 8443 8444)
+        PORT_DESCRIPTIONS=("SSH" "WebSocket Bridge (WSS)" "HTTPS Demo Server")
+        PUBLIC_PORTS=(8443 8444)  # These ports need public access for browser clients
     fi
 else
     # GPU mode
@@ -109,9 +120,10 @@ else
         IFS=',' read -ra PORT_DESCRIPTIONS <<< "$GPU_SG_PORT_DESCRIPTIONS"
     else
         # Fallback to defaults for Conformer-CTC with Riva
-        PORTS=(22 50051 8000 9090)
-        PORT_DESCRIPTIONS=("SSH" "Riva gRPC" "Riva HTTP/Health" "Metrics")
+        PORTS=(22 50051 8000)
+        PORT_DESCRIPTIONS=("SSH" "Riva gRPC" "Riva HTTP/Health")
     fi
+    PUBLIC_PORTS=()  # GPU has no public ports
 fi
 
 # Function to display port explanations in user-friendly format
@@ -142,10 +154,6 @@ display_port_info() {
                 echo -e "${GREEN}Port $port - $desc${NC}"
                 echo "  └─ RIVA's web API for checking health and status"
                 ;;
-            8080)
-                echo -e "${GREEN}Port $port - $desc${NC}"
-                echo "  └─ Basic web page for testing (no HTTPS, no microphone)"
-                ;;
             8443)
                 echo -e "${GREEN}Port $port - $desc${NC}"
                 echo "  └─ Secure WebSocket connection for real-time audio streaming"
@@ -153,10 +161,6 @@ display_port_info() {
             8444)
                 echo -e "${GREEN}Port $port - $desc${NC}"
                 echo "  └─ Secure HTTPS demo page that lets your browser use the microphone"
-                ;;
-            9090)
-                echo -e "${GREEN}Port $port - $desc${NC}"
-                echo "  └─ Performance monitoring and metrics dashboard"
                 ;;
             *)
                 echo -e "${GREEN}Port $port - $desc${NC}"
@@ -356,6 +360,51 @@ add_ip_to_ports() {
     fi
 }
 
+# Function to configure public access for specific ports (buildbox only)
+configure_public_ports() {
+    if [ ${#PUBLIC_PORTS[@]} -eq 0 ]; then
+        return
+    fi
+
+    echo -e "\n${CYAN}🌍 Public Access Configuration${NC}"
+    echo "----------------------------------------"
+    echo "The following ports need to be accessible from anywhere (0.0.0.0/0)"
+    echo "for browser clients to connect:"
+    for port in "${PUBLIC_PORTS[@]}"; do
+        local port_name=""
+        for i in "${!PORTS[@]}"; do
+            if [ "${PORTS[$i]}" = "$port" ]; then
+                port_name="${PORT_DESCRIPTIONS[$i]}"
+                break
+            fi
+        done
+        echo "  • Port $port - $port_name"
+    done
+    echo ""
+    read -p "Configure public access for these ports? (Y/n): " -n 1 -r
+    echo
+
+    if [[ $REPLY =~ ^[Nn]$ ]]; then
+        echo -e "${YELLOW}Skipping public access configuration${NC}"
+        return
+    fi
+
+    echo -e "\n${CYAN}Opening ports to public access...${NC}"
+    for port in "${PUBLIC_PORTS[@]}"; do
+        echo -n "  Opening port $port to 0.0.0.0/0..."
+        if aws ec2 authorize-security-group-ingress \
+            --region "$AWS_REGION" \
+            --group-id "$TARGET_SG" \
+            --protocol tcp \
+            --port "$port" \
+            --cidr "0.0.0.0/0" 2>&1 | grep -q "already exists\|Success"; then
+            echo -e " ${GREEN}✓${NC}"
+        else
+            echo -e " ${YELLOW}(already open)${NC}"
+        fi
+    done
+}
+
 # Function to save configuration to .env
 save_configuration() {
     local ips="$1"
@@ -467,6 +516,9 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     done
 fi
 
+# Step 4.5: Configure public access for buildbox ports
+configure_public_ports
+
 # Step 5: Save configuration
 if [ -n "$ALL_IPS" ]; then
     echo -e "\n${CYAN}💾 Saving configuration...${NC}"
@@ -521,15 +573,20 @@ echo "  • Security Group: ${TARGET_SG}"
 echo "  • Protected Ports: ${PORTS[*]}"
 echo ""
 echo -e "${YELLOW}⚠️  Important:${NC}"
-echo "  • Only the configured IPs can now access the services"
+if [ "$TARGET_MODE" == "buildbox" ] && [ ${#PUBLIC_PORTS[@]} -gt 0 ]; then
+    echo "  • Ports ${PUBLIC_PORTS[*]} are open to the world (0.0.0.0/0) for browser access"
+    echo "  • Other ports (22) are restricted to the configured IPs only"
+else
+    echo "  • Only the configured IPs can now access the services"
+fi
 echo "  • Changes may take 30-60 seconds to propagate"
 echo "  • To modify IPs later, run this script again"
 echo ""
 echo -e "${CYAN}Next Steps:${NC}"
 if [ "$TARGET_MODE" == "buildbox" ]; then
-    echo "1. Access WebSocket demo: https://${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}:8444/demo.html"
-    echo "2. Access HTTP demo: http://${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}:8080/demo.html"
-    echo "3. WebSocket bridge status: sudo systemctl status riva-websocket-bridge"
+    echo "1. Access HTTPS demo: https://${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}:8444/demo.html"
+    echo "2. WebSocket bridge status: sudo systemctl status riva-websocket-bridge"
+    echo "3. To configure GPU instance, run: ./scripts/030-configure-security-groups.sh --gpu"
 else
     echo "1. Deploy Conformer-CTC model: ./scripts/110-deploy-conformer-streaming.sh"
     echo "2. Check GPU instance status: ./scripts/750-status-gpu-instance.sh"
