@@ -9,16 +9,21 @@ exec > >(tee -a "logs/$(basename $0 .sh)-$(date +%Y%m%d-%H%M%S).log") 2>&1
 # No riva-build or riva-deploy needed - just download and start!
 #
 # Category: FAST DEPLOYMENT FROM S3 CACHE
-# This script: ~2-3 minutes (vs 30-50 min rebuilding)
+# Timing:
+#   - First run: ~15-20 minutes (includes 19GB RIVA image download)
+#   - Subsequent runs: ~2-3 minutes (image already cached)
 #
 # What this does:
-# 1. Download pre-built Triton models from S3 to build box
-# 2. Transfer to GPU instance
-# 3. Start RIVA server with start-riva command
-# 4. Health checks and validation
+# 1. Download pre-built Triton models from S3 to build box (~10s)
+# 2. Transfer models to GPU instance (~10s)
+# 3. Pull RIVA Docker image if not present (~10-15 min first time only)
+# 4. Start RIVA server with 8GB CUDA memory pool (~3s)
+# 5. Wait for models to load and server ready (~3 min)
+# 6. Health checks and validation
 #
 # Prerequisites:
-# - S3 cache must be populated (run 100→101→102 first)
+# - S3 cache must be populated (run 100→101→102 first, one-time setup)
+# - NGC_API_KEY configured in .env for docker image pull
 # ============================================================================
 
 echo "============================================"
@@ -63,7 +68,8 @@ SSH_OPTS="-i $SSH_KEY -o ConnectTimeout=10 -o StrictHostKeyChecking=no"
 REMOTE_USER="ubuntu"
 TEMP_DIR="/tmp/conformer-deploy-$$"
 RIVA_VERSION="2.19.0"
-READY_TIMEOUT=180
+DOCKER_PULL_TIMEOUT=900  # 15 minutes for 19GB image download
+READY_TIMEOUT=300        # 5 minutes for model loading after container starts
 
 # Verify SSH key exists
 if [ ! -f "$SSH_KEY" ]; then
@@ -182,9 +188,9 @@ fi
 echo ""
 
 # ============================================================================
-# Step 4: Configure NGC access for Docker
+# Step 4: Pull RIVA Docker Image
 # ============================================================================
-echo "Step 4/6: Configuring NGC access..."
+echo "Step 4/6: Pulling RIVA Docker image..."
 
 # Check if NGC API key is set
 if [ -z "${NGC_API_KEY:-}" ]; then
@@ -194,33 +200,91 @@ if [ -z "${NGC_API_KEY:-}" ]; then
     exit 1
 fi
 
-# Login to NGC on GPU instance
+PULL_START=$(date +%s)
+
+# Login to NGC and pull image on GPU instance
 ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
-    "NGC_API_KEY='${NGC_API_KEY}'" << 'NGC_LOGIN'
+    "NGC_API_KEY='${NGC_API_KEY}' RIVA_VERSION='${RIVA_VERSION}' DOCKER_PULL_TIMEOUT='${DOCKER_PULL_TIMEOUT}'" << 'PULL_IMAGE'
 set -euo pipefail
 
-# Check if already logged in
-if docker images | grep -q "nvcr.io/nvidia/riva/riva-speech"; then
-    echo "✅ RIVA image already available"
-else
-    echo "Logging into NVIDIA NGC..."
-    echo "$NGC_API_KEY" | docker login nvcr.io --username '$oauthtoken' --password-stdin >/dev/null 2>&1
-    if [ $? -eq 0 ]; then
-        echo "✅ NGC login successful"
-    else
-        echo "❌ NGC login failed"
+RIVA_IMAGE="nvcr.io/nvidia/riva/riva-speech:${RIVA_VERSION}"
+
+# Check if image already exists
+if docker images | grep -q "nvcr.io/nvidia/riva/riva-speech.*${RIVA_VERSION}"; then
+    echo "✅ RIVA image ${RIVA_VERSION} already present"
+    docker images | grep "riva-speech"
+    exit 0
+fi
+
+echo "Logging into NVIDIA NGC..."
+echo "$NGC_API_KEY" | docker login nvcr.io --username '$oauthtoken' --password-stdin >/dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo "❌ NGC login failed"
+    exit 1
+fi
+echo "✅ NGC login successful"
+
+echo ""
+echo "Pulling RIVA image (19GB - this will take 10-15 minutes)..."
+echo "Image: ${RIVA_IMAGE}"
+echo ""
+
+# Pull image in background and monitor progress
+docker pull "${RIVA_IMAGE}" > /tmp/docker-pull.log 2>&1 &
+PULL_PID=$!
+
+# Monitor pull progress
+ELAPSED=0
+INTERVAL=10
+while kill -0 $PULL_PID 2>/dev/null; do
+    if [ $ELAPSED -ge $DOCKER_PULL_TIMEOUT ]; then
+        echo "❌ Docker pull timeout after ${DOCKER_PULL_TIMEOUT}s"
+        kill $PULL_PID 2>/dev/null
+        tail -30 /tmp/docker-pull.log
         exit 1
     fi
+
+    # Show progress every 30 seconds
+    if [ $((ELAPSED % 30)) -eq 0 ]; then
+        COMPLETED=$(grep -c "Pull complete" /tmp/docker-pull.log 2>/dev/null || echo "0")
+        echo "⏳ Pulling... ${ELAPSED}s elapsed, ${COMPLETED} layers completed"
+    fi
+
+    sleep $INTERVAL
+    ELAPSED=$((ELAPSED + INTERVAL))
+done
+
+# Check if pull was successful
+wait $PULL_PID
+PULL_EXIT=$?
+
+if [ $PULL_EXIT -ne 0 ]; then
+    echo "❌ Docker pull failed"
+    tail -50 /tmp/docker-pull.log
+    exit 1
 fi
-NGC_LOGIN
+
+# Verify image is present
+if docker images | grep -q "nvcr.io/nvidia/riva/riva-speech.*${RIVA_VERSION}"; then
+    echo "✅ RIVA image pulled successfully"
+    docker images | grep "riva-speech"
+else
+    echo "❌ Image pull appeared to succeed but image not found"
+    docker images
+    exit 1
+fi
+PULL_IMAGE
 
 if [ $? -ne 0 ]; then
-    echo "❌ Failed to configure NGC access"
+    echo "❌ Failed to pull RIVA Docker image"
     rm -rf "$TEMP_DIR"
     exit 1
 fi
 
-echo "✅ NGC access configured"
+PULL_END=$(date +%s)
+PULL_DURATION=$((PULL_END - PULL_START))
+
+echo "✅ RIVA image ready (pulled in ${PULL_DURATION}s)"
 echo ""
 
 # ============================================================================
@@ -359,6 +423,7 @@ echo ""
 echo "Deployment Breakdown:"
 echo "  • S3 Download: ${DOWNLOAD_DURATION}s"
 echo "  • GPU Transfer: ${TRANSFER_DURATION}s"
+echo "  • Docker Pull: ${PULL_DURATION}s"
 echo "  • Server Start: ${START_DURATION}s"
 echo "  • Health Check: ${HEALTH_DURATION}s"
 echo "  • Total Time: ${TOTAL_DEPLOY_DURATION}s (~$((TOTAL_DEPLOY_DURATION / 60)) min)"
