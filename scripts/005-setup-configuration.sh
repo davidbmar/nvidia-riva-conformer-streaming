@@ -1362,6 +1362,18 @@ RIVA_ENABLE_PARTIAL_RESULTS=true
 RIVA_PARTIAL_RESULT_INTERVAL_MS=300
 
 # ============================================================================
+# Build & Deployment Optimizations (Scripts 100-102, 125)
+# ============================================================================
+# REMOTE_SYNC: Skip SCP hop, sync GPU→S3 directly in script 102
+# Requires GPU instance to have AWS credentials (IAM role)
+REMOTE_SYNC=false
+
+# GOLDEN_WAV_S3: Optional validation audio for script 124
+# Used to smoke-test models before uploading to S3 cache
+# Should be 16kHz mono PCM WAV, 3-5 seconds duration
+GOLDEN_WAV_S3=
+
+# ============================================================================
 # Application Server Settings
 # ============================================================================
 APP_HOST=0.0.0.0
