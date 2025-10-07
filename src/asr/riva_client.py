@@ -92,6 +92,9 @@ class RivaConfig:
     word_boost_score: float = float(os.getenv("RIVA_WORD_BOOST_SCORE", "50.0"))
     boosted_words: str = os.getenv("RIVA_BOOSTED_WORDS", "")
 
+    # Dictation Mode (ignore automatic finals, only finalize on stream end)
+    dictation_mode: bool = os.getenv("RIVA_DICTATION_MODE", "false").lower() == "true"
+
 
 class RivaASRClient:
     """
@@ -441,7 +444,11 @@ class RivaASRClient:
         # Determine if partial or final
         is_final = result.is_final
         current_time = time.time()
-        
+
+        # Dictation mode: ignore RIVA's automatic finals, treat everything as partial
+        if self.config.dictation_mode and is_final:
+            is_final = False  # Override to keep building continuous transcript
+
         # Rate limit partials
         if not is_final and self.config.enable_partials:
             if (current_time - self.last_partial_time) * 1000 < self.config.partial_interval_ms:
