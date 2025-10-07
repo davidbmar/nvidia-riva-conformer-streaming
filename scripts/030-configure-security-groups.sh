@@ -26,9 +26,13 @@ echo -e "${CYAN}Architecture Overview:${NC}"
 echo "  • GPU Worker: Runs NVIDIA Riva (ports 22, 50051, 8000)"
 echo "  • Build Box: Runs WebSocket bridge & demo (ports 22, 8443, 8444)"
 echo ""
-echo -e "${YELLOW}Note:${NC} Run this script twice:"
-echo "  1. ./scripts/030-configure-security-groups.sh --gpu"
-echo "  2. ./scripts/030-configure-security-groups.sh --buildbox"
+echo -e "${GREEN}Smart Auto-Detection:${NC}"
+echo "  This script will automatically detect and configure BOTH security"
+echo "  groups if they exist in your .env file. You only need to run it once!"
+echo ""
+echo -e "${YELLOW}Optional Flags:${NC}"
+echo "  --gpu       Configure GPU instance only"
+echo "  --buildbox  Configure build box only"
 echo "================================================================"
 
 # Check if configuration exists
@@ -49,7 +53,7 @@ if [ "$DEPLOYMENT_STRATEGY" != "1" ]; then
 fi
 
 # Parse command line arguments
-TARGET_MODE="gpu"
+TARGET_MODE="auto"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --buildbox)
@@ -61,18 +65,20 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --help)
-            echo "Usage: $0 [--gpu|--buildbox]"
+            echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Configure AWS security group firewall rules for RIVA deployment"
             echo ""
             echo "Options:"
-            echo "  --gpu       Configure GPU instance security group (default)"
-            echo "  --buildbox  Configure buildbox/control plane security group"
+            echo "  (none)      Configure both GPU and buildbox security groups (default)"
+            echo "  --gpu       Configure GPU instance security group only"
+            echo "  --buildbox  Configure buildbox/control plane security group only"
             echo "  --help      Show this help message"
             echo ""
             echo "Examples:"
-            echo "  $0              # Configure GPU instance"
-            echo "  $0 --buildbox   # Configure buildbox for web demo access"
+            echo "  $0              # Configure both (recommended)"
+            echo "  $0 --gpu        # Configure GPU only"
+            echo "  $0 --buildbox   # Configure buildbox only"
             exit 0
             ;;
         *)
@@ -83,48 +89,82 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Determine which security group to configure
-if [ "$TARGET_MODE" == "buildbox" ]; then
-    if [ -z "$BUILDBOX_SECURITY_GROUP" ]; then
-        echo -e "${RED}❌ Buildbox security group ID not found in configuration${NC}"
-        echo "BUILDBOX_SECURITY_GROUP is not set in .env"
+# Detect available security groups
+declare -a SG_TARGETS=()
+
+if [ "$TARGET_MODE" == "auto" ]; then
+    # Auto mode: detect and configure both if available
+    if [ -n "$SECURITY_GROUP_ID" ]; then
+        SG_TARGETS+=("gpu")
+    fi
+    if [ -n "$BUILDBOX_SECURITY_GROUP" ]; then
+        SG_TARGETS+=("buildbox")
+    fi
+
+    if [ ${#SG_TARGETS[@]} -eq 0 ]; then
+        echo -e "${RED}❌ No security groups found in configuration${NC}"
+        echo "Set SECURITY_GROUP_ID and/or BUILDBOX_SECURITY_GROUP in .env"
         exit 1
     fi
-    TARGET_SG="$BUILDBOX_SECURITY_GROUP"
-    SG_NAME="Buildbox"
 
-    # Load buildbox ports from .env
-    if [[ -n "${BUILDBOX_SG_PORTS:-}" ]]; then
-        IFS=',' read -ra PORTS <<< "$BUILDBOX_SG_PORTS"
-        IFS=',' read -ra PORT_DESCRIPTIONS <<< "$BUILDBOX_SG_PORT_DESCRIPTIONS"
-        IFS=',' read -ra PUBLIC_PORTS <<< "${BUILDBOX_SG_PUBLIC_PORTS:-}"
-    else
-        # Fallback to defaults
-        PORTS=(22 8443 8444)
-        PORT_DESCRIPTIONS=("SSH" "WebSocket Bridge (WSS)" "HTTPS Demo Server")
-        PUBLIC_PORTS=(8443 8444)  # These ports need public access for browser clients
-    fi
-else
-    # GPU mode
+    echo ""
+    echo -e "${GREEN}🎯 Auto-detected ${#SG_TARGETS[@]} security group(s) to configure:${NC}"
+    for target in "${SG_TARGETS[@]}"; do
+        if [ "$target" == "gpu" ]; then
+            echo "  ✓ GPU Instance ($SECURITY_GROUP_ID) - ports 22, 50051, 8000"
+        else
+            echo "  ✓ Build Box ($BUILDBOX_SECURITY_GROUP) - ports 22, 8443, 8444"
+        fi
+    done
+    echo ""
+elif [ "$TARGET_MODE" == "gpu" ]; then
     if [ -z "$SECURITY_GROUP_ID" ]; then
         echo -e "${RED}❌ GPU security group ID not found in configuration${NC}"
         echo "SECURITY_GROUP_ID is not set in .env"
         exit 1
     fi
-    TARGET_SG="$SECURITY_GROUP_ID"
-    SG_NAME="GPU Instance"
-
-    # Load GPU ports from .env
-    if [[ -n "${GPU_SG_PORTS:-}" ]]; then
-        IFS=',' read -ra PORTS <<< "$GPU_SG_PORTS"
-        IFS=',' read -ra PORT_DESCRIPTIONS <<< "$GPU_SG_PORT_DESCRIPTIONS"
-    else
-        # Fallback to defaults for Conformer-CTC with Riva
-        PORTS=(22 50051 8000)
-        PORT_DESCRIPTIONS=("SSH" "Riva gRPC" "Riva HTTP/Health")
+    SG_TARGETS=("gpu")
+elif [ "$TARGET_MODE" == "buildbox" ]; then
+    if [ -z "$BUILDBOX_SECURITY_GROUP" ]; then
+        echo -e "${RED}❌ Buildbox security group ID not found in configuration${NC}"
+        echo "BUILDBOX_SECURITY_GROUP is not set in .env"
+        exit 1
     fi
-    PUBLIC_PORTS=()  # GPU has no public ports
+    SG_TARGETS=("buildbox")
 fi
+
+# Function to get port configuration for a target
+get_port_config() {
+    local target=$1
+
+    if [ "$target" == "buildbox" ]; then
+        TARGET_SG="$BUILDBOX_SECURITY_GROUP"
+        SG_NAME="Buildbox"
+
+        if [[ -n "${BUILDBOX_SG_PORTS:-}" ]]; then
+            IFS=',' read -ra PORTS <<< "$BUILDBOX_SG_PORTS"
+            IFS=',' read -ra PORT_DESCRIPTIONS <<< "$BUILDBOX_SG_PORT_DESCRIPTIONS"
+            IFS=',' read -ra PUBLIC_PORTS <<< "${BUILDBOX_SG_PUBLIC_PORTS:-}"
+        else
+            PORTS=(22 8443 8444)
+            PORT_DESCRIPTIONS=("SSH" "WebSocket Bridge (WSS)" "HTTPS Demo Server")
+            PUBLIC_PORTS=(8443 8444)
+        fi
+    else
+        # GPU mode
+        TARGET_SG="$SECURITY_GROUP_ID"
+        SG_NAME="GPU Instance"
+
+        if [[ -n "${GPU_SG_PORTS:-}" ]]; then
+            IFS=',' read -ra PORTS <<< "$GPU_SG_PORTS"
+            IFS=',' read -ra PORT_DESCRIPTIONS <<< "$GPU_SG_PORT_DESCRIPTIONS"
+        else
+            PORTS=(22 50051 8000)
+            PORT_DESCRIPTIONS=("SSH" "Riva gRPC" "Riva HTTP/Health")
+        fi
+        PUBLIC_PORTS=()
+    fi
+}
 
 # Function to display port explanations in user-friendly format
 display_port_info() {
@@ -423,50 +463,126 @@ save_configuration() {
     fi
 }
 
-# Main execution
+# Function to configure a single security group
+configure_security_group() {
+    local target=$1
+    local collected_ips="$2"
+    local collected_descriptions="$3"
+
+    # Load port configuration for this target
+    get_port_config "$target"
+
+    echo ""
+    echo -e "${MAGENTA}════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}Configuring: ${SG_NAME}${NC}"
+    echo -e "${MAGENTA}════════════════════════════════════════════════════════════════${NC}"
+    echo "  • Security Group: ${TARGET_SG}"
+    echo "  • AWS Region: $AWS_REGION"
+    echo "  • Ports: ${PORTS[*]}"
+    if [ ${#PUBLIC_PORTS[@]} -gt 0 ]; then
+        echo "  • Public Ports: ${PUBLIC_PORTS[*]} (0.0.0.0/0)"
+    fi
+
+    # Display user-friendly port information
+    display_port_info
+
+    # Step 1: List current rules
+    list_current_rules
+
+    # Step 2: Optional - Delete existing IPs
+    delete_selected_ips
+
+    # Step 3: Apply collected IPs to this security group
+    if [ -n "$collected_ips" ]; then
+        echo -e "\n${CYAN}Adding authorized IPs to ${SG_NAME}...${NC}"
+        # Parse the IPs and descriptions
+        IFS=' ' read -ra ip_array <<< "$collected_ips"
+        IFS=' ' read -ra desc_array <<< "$collected_descriptions"
+
+        for i in "${!ip_array[@]}"; do
+            add_ip_to_ports "${ip_array[$i]}" "${desc_array[$i]:-}"
+        done
+    fi
+
+    # Step 4: Configure public access for buildbox ports
+    configure_public_ports
+
+    # Step 5: Final verification
+    echo -e "\n${BLUE}🔍 ${SG_NAME} Final Configuration${NC}"
+    echo "================================================================"
+
+    # Get all rules and display them properly
+    echo "Configured Security Rules:"
+    echo "-------------------------"
+    aws ec2 describe-security-groups \
+        --region "$AWS_REGION" \
+        --group-ids "$TARGET_SG" \
+        --output json 2>/dev/null | jq -r '
+        .SecurityGroups[0].IpPermissions[] |
+        "Port \(.FromPort): \([.IpRanges[].CidrIp] | join(", "))"
+        ' | sort -n | while read rule; do
+        echo "  $rule"
+    done
+
+    echo ""
+    echo "Summary by IP Address:"
+    echo "---------------------"
+    # Get unique IPs and show what ports they can access
+    aws ec2 describe-security-groups \
+        --region "$AWS_REGION" \
+        --group-ids "$TARGET_SG" \
+        --output json 2>/dev/null | jq -r '
+        .SecurityGroups[0].IpPermissions[].IpRanges[].CidrIp
+        ' | sort -u | while read ip; do
+        clean_ip=$(echo "$ip" | sed 's|/32||')
+        ports=$(aws ec2 describe-security-groups \
+            --region "$AWS_REGION" \
+            --group-ids "$TARGET_SG" \
+            --output json 2>/dev/null | jq -r --arg ip "$ip" '
+            .SecurityGroups[0].IpPermissions[] |
+            select(.IpRanges[].CidrIp == $ip) | .FromPort
+            ' | sort -n | tr '\n' ' ')
+        echo "  ${clean_ip}: ports ${ports}"
+    done
+
+    echo -e "\n${GREEN}✅ ${SG_NAME} Configuration Complete!${NC}"
+    echo "================================================================"
+}
+
+# Main execution - Collect IPs once
 echo ""
-echo -e "${BLUE}Current Configuration:${NC}"
-echo "  • Target: ${SG_NAME}"
-echo "  • Security Group: ${TARGET_SG}"
-echo "  • AWS Region: $AWS_REGION"
-if [ "$TARGET_MODE" == "buildbox" ]; then
-    echo "  • Buildbox IP: ${BUILDBOX_PUBLIC_IP:-Not set}"
-else
-    echo "  • GPU Instance IP: ${GPU_INSTANCE_IP:-Not set}"
+echo -e "${CYAN}📋 IP Address Collection (applies to all security groups)${NC}"
+echo "================================================================"
+
+# Note for users about public access
+if [ "${#SG_TARGETS[@]}" -gt 1 ] || [[ " ${SG_TARGETS[@]} " =~ " buildbox " ]]; then
+    echo ""
+    echo -e "${YELLOW}💡 Note about browser access:${NC}"
+    echo "Ports 8443 and 8444 will be opened to everyone (0.0.0.0/0) on the build box."
+    echo "You only need to add IPs here for SSH/admin access, NOT for browser clients."
+    echo ""
 fi
 
-# Display user-friendly port information
-display_port_info
-
-# Step 1: List current rules
-list_current_rules
-
-# Step 2: Optional - Delete existing IPs
-delete_selected_ips
-
-# Step 3: Auto-detect and add current IP
+# Step 1: Auto-detect and collect current IP
 CURRENT_IP=$(get_current_ip)
 echo -e "\n${CYAN}🌐 Current Machine IP Detection${NC}"
 echo "----------------------------------------"
 echo -e "Your current public IP: ${GREEN}$CURRENT_IP${NC}"
 
 if [ "$CURRENT_IP" != "unknown" ]; then
-    read -p "Add this IP to the security group? (Y/n): " -n 1 -r
+    read -p "Add this IP to security groups? (Y/n): " -n 1 -r
     echo
 
     if [[ ! $REPLY =~ ^[Nn]$ ]]; then
         read -p "Enter a description for this IP (e.g., 'LLM-EC2', 'Home-MacBook'): " current_ip_desc
         current_ip_desc=${current_ip_desc:-"Current-Machine"}
 
-        echo -e "\n${CYAN}Adding current machine IP...${NC}"
-        add_ip_to_ports "$CURRENT_IP" "$current_ip_desc"
-
         ALL_IPS="$CURRENT_IP"
         ALL_DESCRIPTIONS="$current_ip_desc"
     fi
 fi
 
-# Step 3a: Check if we should add GPU instance's own IP (best practice)
+# Step 2: Check if we should add GPU instance's own IP (best practice)
 if [ -n "$GPU_INSTANCE_IP" ] && [ "$GPU_INSTANCE_IP" != "$CURRENT_IP" ]; then
     echo -e "\n${CYAN}🖥️ GPU Instance IP${NC}"
     echo "----------------------------------------"
@@ -474,19 +590,16 @@ if [ -n "$GPU_INSTANCE_IP" ] && [ "$GPU_INSTANCE_IP" != "$CURRENT_IP" ]; then
     echo -e "${YELLOW}Note: Adding the GPU instance's own IP is a best practice${NC}"
     echo "This ensures internal services can communicate properly."
 
-    read -p "Add GPU instance IP to security group? (Y/n): " -n 1 -r
+    read -p "Add GPU instance IP to security groups? (Y/n): " -n 1 -r
     echo
 
     if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-        echo -e "\n${CYAN}Adding GPU instance IP...${NC}"
-        add_ip_to_ports "$GPU_INSTANCE_IP" "GPU-Instance"
-
         ALL_IPS="${ALL_IPS:+$ALL_IPS }$GPU_INSTANCE_IP"
         ALL_DESCRIPTIONS="${ALL_DESCRIPTIONS:+$ALL_DESCRIPTIONS }GPU-Instance"
     fi
 fi
 
-# Step 4: Add additional IPs
+# Step 3: Collect additional IPs
 echo -e "\n${CYAN}📝 Additional IP Addresses${NC}"
 echo "----------------------------------------"
 read -p "Do you want to add more IPs? (y/N): " -n 1 -r
@@ -509,15 +622,15 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
         read -p "Description for $new_ip: " new_ip_desc
         new_ip_desc=${new_ip_desc:-"Custom"}
 
-        add_ip_to_ports "$new_ip" "$new_ip_desc"
-
         ALL_IPS="${ALL_IPS:+$ALL_IPS }$new_ip"
         ALL_DESCRIPTIONS="${ALL_DESCRIPTIONS:+$ALL_DESCRIPTIONS }$new_ip_desc"
     done
 fi
 
-# Step 4.5: Configure public access for buildbox ports
-configure_public_ports
+# Step 4: Configure each security group
+for target in "${SG_TARGETS[@]}"; do
+    configure_security_group "$target" "$ALL_IPS" "$ALL_DESCRIPTIONS"
+done
 
 # Step 5: Save configuration
 if [ -n "$ALL_IPS" ]; then
@@ -526,72 +639,37 @@ if [ -n "$ALL_IPS" ]; then
     echo -e "${GREEN}✓ Configuration saved${NC}"
 fi
 
-# Step 6: Final verification
-echo -e "\n${BLUE}🔍 Final Security Group Configuration${NC}"
-echo "================================================================"
-
-# Get all rules and display them properly
-echo "Configured Security Rules:"
-echo "-------------------------"
-aws ec2 describe-security-groups \
-    --region "$AWS_REGION" \
-    --group-ids "$TARGET_SG" \
-    --output json 2>/dev/null | jq -r '
-    .SecurityGroups[0].IpPermissions[] |
-    "Port \(.FromPort): \([.IpRanges[].CidrIp] | join(", "))"
-    ' | sort -n | while read rule; do
-    echo "  $rule"
-done
-
+# Final Summary
 echo ""
-echo "Summary by IP Address:"
-echo "---------------------"
-# Get unique IPs and show what ports they can access
-aws ec2 describe-security-groups \
-    --region "$AWS_REGION" \
-    --group-ids "$TARGET_SG" \
-    --output json 2>/dev/null | jq -r '
-    .SecurityGroups[0].IpPermissions[].IpRanges[].CidrIp
-    ' | sort -u | while read ip; do
-    clean_ip=$(echo "$ip" | sed 's|/32||')
-    ports=$(aws ec2 describe-security-groups \
-        --region "$AWS_REGION" \
-        --group-ids "$TARGET_SG" \
-        --output json 2>/dev/null | jq -r --arg ip "$ip" '
-        .SecurityGroups[0].IpPermissions[] |
-        select(.IpRanges[].CidrIp == $ip) | .FromPort
-        ' | sort -n | tr '\n' ' ')
-    echo "  ${clean_ip}: ports ${ports}"
-done
-
 echo ""
-echo -e "${GREEN}✅ Security Configuration Complete!${NC}"
-echo "================================================================"
-echo "Security Summary:"
-echo "  • Target: ${SG_NAME}"
-echo "  • Security Group: ${TARGET_SG}"
-echo "  • Protected Ports: ${PORTS[*]}"
+echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
+echo -e "${GREEN}✅ ALL SECURITY GROUPS CONFIGURED SUCCESSFULLY!${NC}"
+echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
 echo ""
-echo -e "${YELLOW}⚠️  Important:${NC}"
-if [ "$TARGET_MODE" == "buildbox" ] && [ ${#PUBLIC_PORTS[@]} -gt 0 ]; then
-    echo "  • Ports ${PUBLIC_PORTS[*]} are open to the world (0.0.0.0/0) for browser access"
-    echo "  • Other ports (22) are restricted to the configured IPs only"
-else
-    echo "  • Only the configured IPs can now access the services"
+echo -e "${CYAN}Summary:${NC}"
+echo "  • Configured ${#SG_TARGETS[@]} security group(s)"
+if [ -n "$ALL_IPS" ]; then
+    echo "  • Added $(echo "$ALL_IPS" | wc -w) authorized IP(s) for SSH/admin access"
 fi
-echo "  • Changes may take 30-60 seconds to propagate"
-echo "  • To modify IPs later, run this script again"
+for target in "${SG_TARGETS[@]}"; do
+    if [ "$target" == "buildbox" ]; then
+        echo "  • Build Box: Ports 8443, 8444 open to public (0.0.0.0/0)"
+    fi
+done
 echo ""
-echo -e "${CYAN}Next Steps:${NC}"
-if [ "$TARGET_MODE" == "buildbox" ]; then
-    echo "1. Access HTTPS demo: https://${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}:8444/demo.html"
-    echo "2. WebSocket bridge status: sudo systemctl status riva-websocket-bridge"
-    echo "3. To configure GPU instance, run: ./scripts/030-configure-security-groups.sh --gpu"
-else
-    echo "1. Deploy Conformer-CTC model: ./scripts/110-deploy-conformer-streaming.sh"
-    echo "2. Check GPU instance status: ./scripts/750-status-gpu-instance.sh"
-    echo "3. Test Riva connectivity: grpcurl -plaintext ${GPU_INSTANCE_IP:-<gpu-ip>}:50051 list"
-    echo "4. View Riva metrics: curl http://${GPU_INSTANCE_IP:-<gpu-ip>}:8000/metrics"
-    echo "5. SSH to GPU instance: ssh -i ~/.ssh/$SSH_KEY_NAME.pem ubuntu@${GPU_INSTANCE_IP:-<gpu-ip>}"
+echo -e "${YELLOW}⚠️  Important Notes:${NC}"
+echo "  • Security group changes may take 30-60 seconds to propagate"
+echo "  • To modify configuration later, run this script again"
+if [[ " ${SG_TARGETS[@]} " =~ " buildbox " ]]; then
+    echo "  • Browser clients (phone, laptop) can access ports 8443/8444 without IP whitelisting"
+fi
+echo ""
+echo -e "${CYAN}🎯 Next Steps:${NC}"
+if [[ " ${SG_TARGETS[@]} " =~ " buildbox " ]]; then
+    echo "  • Access demo: https://${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}:8444/demo.html"
+fi
+if [[ " ${SG_TARGETS[@]} " =~ " gpu " ]]; then
+    echo "  • Deploy model: ./scripts/110-deploy-conformer-streaming.sh"
+    echo "  • Check status: ./scripts/750-status-gpu-instance.sh"
 fi
 echo "================================================================"
