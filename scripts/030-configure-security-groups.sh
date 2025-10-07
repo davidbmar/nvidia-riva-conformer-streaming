@@ -873,95 +873,134 @@ if [[ " ${SG_TARGETS[@]} " =~ " gpu " ]] && [[ " ${SG_TARGETS[@]} " =~ " buildbo
     # Both configured - show full architecture
 
     # Get actual configured IPs for display
-    local buildbox_ips=""
-    local gpu_ips=""
+    local admin_ips_display=""
     if [ -n "$ALL_IPS" ]; then
         IFS=' ' read -ra ip_list <<< "$ALL_IPS"
         IFS=' ' read -ra desc_list <<< "$ALL_DESCRIPTIONS"
 
         for i in "${!ip_list[@]}"; do
-            buildbox_ips="${buildbox_ips}  • ${ip_list[$i]} (${desc_list[$i]:-Unknown})\n"
-            gpu_ips="${gpu_ips}  • ${ip_list[$i]} (${desc_list[$i]:-Unknown})\n"
+            admin_ips_display="${admin_ips_display}    • ${ip_list[$i]} (${desc_list[$i]:-Unknown})\n"
         done
     fi
 
-    echo "  ┌───────────────────────────┐          ┌──────────────────────────────────────┐"
-    echo "  │     BUILD BOX             │          │       GPU WORKER                     │"
-    echo "  │  (Control Plane)          │          │       (NVIDIA Riva)                  │"
-    echo "  │                           │          │                                      │"
-    echo "  │  SG: ${BUILDBOX_SECURITY_GROUP:-<sg-buildbox>}  │◄────────►│  SG: ${SECURITY_GROUP_ID:-<sg-gpu>}             │"
-    echo "  │                           │  gRPC    │                                      │"
-    echo "  │  Services:                │  :50051  │  Services:                           │"
-    echo "  │  • WebSocket Bridge       │          │  • NVIDIA Riva 2.19                  │"
-    echo "  │  • HTTPS Demo             │          │  • Conformer-CTC-XL                  │"
-    echo "  │                           │          │  • Speech Recognition API            │"
-    echo "  └───────────┬───────────────┘          └──────────────────────────────────────┘"
-    echo "              │"
-    echo "              │ :8443 (WSS)"
-    echo "              │ :8444 (HTTPS)"
-    echo "              │"
-    echo "              ▼"
-    echo "  ┌───────────────────────────┐"
-    echo "  │   BROWSER CLIENTS         │"
-    echo "  │   (Internet)              │"
-    echo "  │                           │"
-    if [ -n "$buildbox_ips" ]; then
-        echo "  │  Authorized IPs:          │"
-        echo -e "$buildbox_ips  │"
+    # Get instance IPs
+    local buildbox_ip="${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}"
+    local gpu_ip="${GPU_INSTANCE_IP:-<gpu-ip>}"
+
+    echo "  ┌────────────────────────────────────┐          ┌────────────────────────────────────┐"
+    echo "  │         BUILD BOX                  │          │         GPU WORKER                 │"
+    echo "  │      (Control Plane)               │          │       (NVIDIA Riva)                │"
+    echo "  │                                    │          │                                    │"
+    echo "  │  IP: ${buildbox_ip}                │          │  IP: ${gpu_ip}                │"
+    echo "  │  SG: ${BUILDBOX_SECURITY_GROUP:-<sg-buildbox>}          │          │  SG: ${SECURITY_GROUP_ID:-<sg-gpu>}                │"
+    echo "  │                                    │          │                                    │"
+    echo "  │  Ports Allowed:                    │          │  Ports Allowed:                    │"
+    echo "  │  ✓ 22   SSH (Admin IPs)            │          │  ✓ 22    SSH (Admin IPs)           │"
+    echo "  │  ✓ 8443 WSS (Public/Restricted)    │          │  ✓ 50051 gRPC (Admin IPs)          │"
+    echo "  │  ✓ 8444 HTTPS (Public/Restricted)  │          │  ✓ 8000  Health (Admin IPs)        │"
+    echo "  │                                    │          │                                    │"
+    echo "  │  Services:                         │──────────│  Services:                         │"
+    echo "  │  • WebSocket Bridge                │  gRPC    │  • NVIDIA Riva 2.19                │"
+    echo "  │  • HTTPS Demo Server               │  :50051  │  • Conformer-CTC-XL Model          │"
+    echo "  │                                    │─────────>│  • Speech Recognition Engine       │"
+    echo "  └────────────────┬───────────────────┘          └────────────────────────────────────┘"
+    echo "                   │"
+    echo "                   │ :8443 (WebSocket/WSS)"
+    echo "                   │ :8444 (HTTPS Demo)"
+    echo "                   ▼"
+    echo "  ┌────────────────────────────────────┐"
+    echo "  │       BROWSER CLIENTS              │"
+    echo "  │       (Internet Access)            │"
+    echo "  │                                    │"
+    if [ -n "$admin_ips_display" ]; then
+        echo "  │  Authorized IPs for Ports 8443/8444:│"
+        echo -e "$admin_ips_display  │"
     else
-        echo "  │  Access: 0.0.0.0/0 or IPs │"
+        echo "  │  Access: 0.0.0.0/0 (Public)        │"
     fi
-    echo "  │                           │"
-    echo "  │  • Phone                  │"
-    echo "  │  • Laptop                 │"
-    echo "  │  • Tablet                 │"
-    echo "  └───────────────────────────┘"
+    echo "  │                                    │"
+    echo "  │  Devices: Phone, Laptop, Tablet    │"
+    echo "  └────────────────────────────────────┘"
     echo ""
     echo ""
-    echo -e "${CYAN}🔒 Security Group Rules:${NC}"
+    echo -e "${CYAN}🔒 Detailed Security Group Rules${NC}"
+    echo "════════════════════════════════════════════════════════════════════════════════"
+    echo ""
+    echo -e "${YELLOW}BUILD BOX${NC} - IP: ${buildbox_ip}"
+    echo "  Security Group: ${BUILDBOX_SECURITY_GROUP:-<sg-id>}"
+    echo ""
+    echo "  Port 22 (SSH) - Admin Access Only:"
+    if [ -n "$admin_ips_display" ]; then
+        echo -e "$admin_ips_display"
+    else
+        echo "    (No IPs configured yet)"
+    fi
+    echo ""
+    echo "  Port 8443 (WebSocket) - Browser Access:"
+    echo "    Public (0.0.0.0/0) or Restricted to specific IPs"
+    echo ""
+    echo "  Port 8444 (HTTPS Demo) - Browser Access:"
+    echo "    Public (0.0.0.0/0) or Restricted to specific IPs"
+    echo ""
     echo "────────────────────────────────────────────────────────────────────────────────"
     echo ""
-    echo -e "${YELLOW}BUILD BOX${NC} (${BUILDBOX_SECURITY_GROUP:-<sg-id>}):"
-    echo "  Port 22  (SSH)              → Admin IPs only"
-    if [ -n "$buildbox_ips" ]; then
-        echo -e "$buildbox_ips"
+    echo -e "${YELLOW}GPU WORKER${NC} - IP: ${gpu_ip}"
+    echo "  Security Group: ${SECURITY_GROUP_ID:-<sg-id>}"
+    echo ""
+    echo "  Port 22 (SSH) - Admin Access Only:"
+    if [ -n "$admin_ips_display" ]; then
+        echo -e "$admin_ips_display"
+    else
+        echo "    (No IPs configured yet)"
     fi
     echo ""
-    echo "  Port 8443 (WebSocket)       → Public or Restricted IPs"
-    echo "  Port 8444 (HTTPS Demo)      → Public or Restricted IPs"
-    echo ""
-    echo -e "${YELLOW}GPU WORKER${NC} (${SECURITY_GROUP_ID:-<sg-id>}):"
-    echo "  Port 22    (SSH)            → Admin IPs only"
-    echo "  Port 50051 (Riva gRPC)      → Admin IPs only"
-    echo "  Port 8000  (Health Check)   → Admin IPs only"
-    if [ -n "$gpu_ips" ]; then
-        echo ""
-        echo -e "$gpu_ips"
+    echo "  Port 50051 (Riva gRPC) - Build Box Communication:"
+    if [ -n "$admin_ips_display" ]; then
+        echo -e "$admin_ips_display"
+    else
+        echo "    (No IPs configured yet)"
     fi
     echo ""
-    echo -e "${GREEN}Data Flow:${NC}"
-    echo "  1. Browser sends audio → Build Box (WSS :8443)"
-    echo "  2. Build Box → GPU Worker (gRPC :50051)"
-    echo "  3. GPU Worker processes with Riva"
-    echo "  4. GPU Worker → Build Box (transcription)"
-    echo "  5. Build Box → Browser (results)"
+    echo "  Port 8000 (Health Check) - Monitoring:"
+    if [ -n "$admin_ips_display" ]; then
+        echo -e "$admin_ips_display"
+    else
+        echo "    (No IPs configured yet)"
+    fi
+    echo ""
+    echo "════════════════════════════════════════════════════════════════════════════════"
+    echo ""
+    echo -e "${GREEN}📡 Data Flow:${NC}"
+    echo "  1. Browser (Phone/Laptop) sends audio → Build Box :8443 (WebSocket)"
+    echo "  2. Build Box forwards to → GPU Worker :50051 (gRPC)"
+    echo "  3. GPU Worker processes audio with NVIDIA Riva Conformer-CTC-XL"
+    echo "  4. GPU Worker returns transcription → Build Box"
+    echo "  5. Build Box sends results → Browser"
 
 elif [[ " ${SG_TARGETS[@]} " =~ " gpu " ]]; then
     # GPU only
-    local gpu_ips=""
+    local admin_ips_display=""
     if [ -n "$ALL_IPS" ]; then
         IFS=' ' read -ra ip_list <<< "$ALL_IPS"
         IFS=' ' read -ra desc_list <<< "$ALL_DESCRIPTIONS"
 
         for i in "${!ip_list[@]}"; do
-            gpu_ips="${gpu_ips}  • ${ip_list[$i]} (${desc_list[$i]:-Unknown})\n"
+            admin_ips_display="${admin_ips_display}    • ${ip_list[$i]} (${desc_list[$i]:-Unknown})\n"
         done
     fi
+
+    local gpu_ip="${GPU_INSTANCE_IP:-<gpu-ip>}"
 
     echo "       ┌──────────────────────────────────────────────┐"
     echo "       │           GPU WORKER (NVIDIA Riva)           │"
     echo "       │                                              │"
-    echo "       │  Security Group: ${SECURITY_GROUP_ID:-<sg-id>}"
+    echo "       │  IP: ${gpu_ip}                          │"
+    echo "       │  Security Group: ${SECURITY_GROUP_ID:-<sg-id>}            │"
+    echo "       │                                              │"
+    echo "       │  Ports Allowed:                              │"
+    echo "       │  ✓ 22    SSH (Admin IPs)                     │"
+    echo "       │  ✓ 50051 gRPC (Admin IPs)                    │"
+    echo "       │  ✓ 8000  Health (Admin IPs)                  │"
     echo "       │                                              │"
     echo "       │  Services:                                   │"
     echo "       │  • NVIDIA Riva 2.19                          │"
@@ -971,52 +1010,92 @@ elif [[ " ${SG_TARGETS[@]} " =~ " gpu " ]]; then
     echo ""
     echo -e "${CYAN}🔒 Security Group Rules:${NC}"
     echo "────────────────────────────────────────────────────────"
-    echo "  Port 22    (SSH)            → Admin IPs only"
-    echo "  Port 50051 (Riva gRPC)      → Admin IPs only"
-    echo "  Port 8000  (Health Check)   → Admin IPs only"
-    if [ -n "$gpu_ips" ]; then
-        echo ""
-        echo -e "$gpu_ips"
+    echo ""
+    echo "  Port 22 (SSH) - Admin Access Only:"
+    if [ -n "$admin_ips_display" ]; then
+        echo -e "$admin_ips_display"
+    else
+        echo "    (No IPs configured yet)"
+    fi
+    echo ""
+    echo "  Port 50051 (Riva gRPC) - API Access:"
+    if [ -n "$admin_ips_display" ]; then
+        echo -e "$admin_ips_display"
+    else
+        echo "    (No IPs configured yet)"
+    fi
+    echo ""
+    echo "  Port 8000 (Health Check) - Monitoring:"
+    if [ -n "$admin_ips_display" ]; then
+        echo -e "$admin_ips_display"
+    else
+        echo "    (No IPs configured yet)"
     fi
 
 elif [[ " ${SG_TARGETS[@]} " =~ " buildbox " ]]; then
     # Build box only
-    local buildbox_ips=""
+    local admin_ips_display=""
     if [ -n "$ALL_IPS" ]; then
         IFS=' ' read -ra ip_list <<< "$ALL_IPS"
         IFS=' ' read -ra desc_list <<< "$ALL_DESCRIPTIONS"
 
         for i in "${!ip_list[@]}"; do
-            buildbox_ips="${buildbox_ips}  • ${ip_list[$i]} (${desc_list[$i]:-Unknown})\n"
+            admin_ips_display="${admin_ips_display}    • ${ip_list[$i]} (${desc_list[$i]:-Unknown})\n"
         done
     fi
+
+    local buildbox_ip="${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}"
 
     echo "       ┌──────────────────────────────────────────────┐"
     echo "       │      BUILD BOX (Control Plane)               │"
     echo "       │                                              │"
-    echo "       │  Security Group: ${BUILDBOX_SECURITY_GROUP:-<sg-id>}"
+    echo "       │  IP: ${buildbox_ip}                     │"
+    echo "       │  Security Group: ${BUILDBOX_SECURITY_GROUP:-<sg-id>}            │"
+    echo "       │                                              │"
+    echo "       │  Ports Allowed:                              │"
+    echo "       │  ✓ 22   SSH (Admin IPs)                      │"
+    echo "       │  ✓ 8443 WSS (Public/Restricted)              │"
+    echo "       │  ✓ 8444 HTTPS (Public/Restricted)            │"
     echo "       │                                              │"
     echo "       │  Services:                                   │"
     echo "       │  • WebSocket Bridge                          │"
     echo "       │  • HTTPS Demo Server                         │"
-    echo "       └──────────────────────────────────────────────┘"
+    echo "       └──────────────────┬───────────────────────────┘"
     echo "                          │"
     echo "                          │ :8443 (WSS)"
     echo "                          │ :8444 (HTTPS)"
     echo "                          ▼"
     echo "       ┌──────────────────────────────────────────────┐"
     echo "       │         BROWSER CLIENTS                      │"
+    if [ -n "$admin_ips_display" ]; then
+        echo "       │  Authorized IPs:                             │"
+        echo -e "$admin_ips_display       │"
+    else
+        echo "       │  Access: 0.0.0.0/0 (Public)                  │"
+    fi
     echo "       └──────────────────────────────────────────────┘"
     echo ""
     echo -e "${CYAN}🔒 Security Group Rules:${NC}"
     echo "────────────────────────────────────────────────────────"
-    echo "  Port 22   (SSH)             → Admin IPs only"
-    if [ -n "$buildbox_ips" ]; then
-        echo -e "$buildbox_ips"
+    echo ""
+    echo "  Port 22 (SSH) - Admin Access Only:"
+    if [ -n "$admin_ips_display" ]; then
+        echo -e "$admin_ips_display"
+    else
+        echo "    (No IPs configured yet)"
     fi
     echo ""
-    echo "  Port 8443 (WebSocket)       → Public or Restricted IPs"
-    echo "  Port 8444 (HTTPS Demo)      → Public or Restricted IPs"
+    echo "  Port 8443 (WebSocket) - Browser Access:"
+    echo "    Public (0.0.0.0/0) or Restricted to specific IPs"
+    if [ -n "$admin_ips_display" ]; then
+        echo -e "$admin_ips_display"
+    fi
+    echo ""
+    echo "  Port 8444 (HTTPS Demo) - Browser Access:"
+    echo "    Public (0.0.0.0/0) or Restricted to specific IPs"
+    if [ -n "$admin_ips_display" ]; then
+        echo -e "$admin_ips_display"
+    fi
 fi
 echo ""
 echo "════════════════════════════════════════════════════════════════════════════════"
