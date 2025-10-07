@@ -488,16 +488,44 @@ add_ip_to_ports() {
     fi
 }
 
+# Function to add an IP to public ports only (8443, 8444)
+add_ip_to_public_ports() {
+    local ip=$1
+    local description=$2
+
+    echo -n "  Adding $ip to public ports ${description:+(${description})}..."
+
+    local success=true
+    for port in "${PUBLIC_PORTS[@]}"; do
+        if ! aws ec2 authorize-security-group-ingress \
+            --region "$AWS_REGION" \
+            --group-id "$TARGET_SG" \
+            --protocol tcp \
+            --port "$port" \
+            --cidr "${ip}/32" 2>&1 | grep -q "already exists\|Success"; then
+            success=false
+        fi
+    done
+
+    if $success; then
+        echo -e " ${GREEN}✓${NC}"
+    else
+        echo -e " ${YELLOW}(some rules already existed)${NC}"
+    fi
+}
+
 # Function to configure public access for specific ports (buildbox only)
 configure_public_ports() {
+    local collected_ips="$1"
+    local collected_descriptions="$2"
+
     if [ ${#PUBLIC_PORTS[@]} -eq 0 ]; then
         return
     fi
 
-    echo -e "\n${CYAN}🌍 Public Access Configuration${NC}"
-    echo "----------------------------------------"
-    echo "The following ports need to be accessible from anywhere (0.0.0.0/0)"
-    echo "for browser clients to connect:"
+    echo -e "\n${CYAN}🌍 Web Demo Ports Configuration${NC}"
+    echo "========================================================================"
+    echo "These ports are for browser access to the demo (WebSocket + HTTPS):"
     for port in "${PUBLIC_PORTS[@]}"; do
         local port_name=""
         for i in "${!PORTS[@]}"; do
@@ -509,28 +537,93 @@ configure_public_ports() {
         echo "  • Port $port - $port_name"
     done
     echo ""
-    read -p "Configure public access for these ports? (Y/n): " -n 1 -r
+    echo -e "${YELLOW}Choose access policy:${NC}"
+    echo "  1) Public access (0.0.0.0/0) - Anyone on the internet can access"
+    echo "  2) Restricted access - Only specific IPs you whitelist (recommended for security)"
+    echo "  3) Skip - Don't configure these ports"
+    echo ""
+    read -p "Enter choice [1/2/3]: " -n 1 -r access_choice
     echo
+    echo ""
 
-    if [[ $REPLY =~ ^[Nn]$ ]]; then
-        echo -e "${YELLOW}Skipping public access configuration${NC}"
-        return
-    fi
+    case $access_choice in
+        1)
+            # Public access
+            echo -e "${CYAN}Opening ports to public access (0.0.0.0/0)...${NC}"
+            for port in "${PUBLIC_PORTS[@]}"; do
+                echo -n "  Opening port $port to 0.0.0.0/0..."
+                if aws ec2 authorize-security-group-ingress \
+                    --region "$AWS_REGION" \
+                    --group-id "$TARGET_SG" \
+                    --protocol tcp \
+                    --port "$port" \
+                    --cidr "0.0.0.0/0" 2>&1 | grep -q "already exists\|Success"; then
+                    echo -e " ${GREEN}✓${NC}"
+                else
+                    echo -e " ${YELLOW}(already open)${NC}"
+                fi
+            done
+            echo ""
+            echo -e "${YELLOW}⚠️  Security Note: These ports are now accessible worldwide${NC}"
+            ;;
+        2)
+            # Restricted access
+            echo -e "${GREEN}Restricting ports to specific IPs (better security!)${NC}"
+            echo ""
 
-    echo -e "\n${CYAN}Opening ports to public access...${NC}"
-    for port in "${PUBLIC_PORTS[@]}"; do
-        echo -n "  Opening port $port to 0.0.0.0/0..."
-        if aws ec2 authorize-security-group-ingress \
-            --region "$AWS_REGION" \
-            --group-id "$TARGET_SG" \
-            --protocol tcp \
-            --port "$port" \
-            --cidr "0.0.0.0/0" 2>&1 | grep -q "already exists\|Success"; then
-            echo -e " ${GREEN}✓${NC}"
-        else
-            echo -e " ${YELLOW}(already open)${NC}"
-        fi
-    done
+            # First, add the IPs already collected for SSH/admin
+            if [ -n "$collected_ips" ]; then
+                echo -e "${CYAN}Adding authorized admin IPs to public ports:${NC}"
+                IFS=' ' read -ra ip_array <<< "$collected_ips"
+                IFS=' ' read -ra desc_array <<< "$collected_descriptions"
+
+                for i in "${!ip_array[@]}"; do
+                    add_ip_to_public_ports "${ip_array[$i]}" "${desc_array[$i]:-}"
+                done
+            fi
+
+            # Ask if they want to add additional IPs for web access
+            echo ""
+            echo -e "${CYAN}Additional IPs for Web Demo Access${NC}"
+            echo "----------------------------------------"
+            echo "You may want to add IPs that can access the web demo but NOT SSH."
+            echo "For example: Your phone, guest laptops, etc."
+            echo ""
+            read -p "Add additional IPs for web demo access only? (y/N): " -n 1 -r
+            echo
+
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                echo -e "\nEnter IP addresses one at a time (press Enter with empty input when done):"
+
+                while true; do
+                    read -p "IP Address (or press Enter to finish): " new_ip
+
+                    [ -z "$new_ip" ] && break
+
+                    # Validate IP format
+                    if [[ ! "$new_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+                        echo -e "${RED}Invalid IP format. Please use XXX.XXX.XXX.XXX${NC}"
+                        continue
+                    fi
+
+                    read -p "Description for $new_ip: " new_ip_desc
+                    new_ip_desc=${new_ip_desc:-"Web-Client"}
+
+                    add_ip_to_public_ports "$new_ip" "$new_ip_desc"
+                done
+            fi
+            echo ""
+            echo -e "${GREEN}✓ Demo ports restricted to authorized IPs only${NC}"
+            ;;
+        3)
+            echo -e "${YELLOW}Skipping public port configuration${NC}"
+            return
+            ;;
+        *)
+            echo -e "${RED}Invalid choice. Skipping public port configuration.${NC}"
+            return
+            ;;
+    esac
 }
 
 # Function to save configuration to .env
@@ -596,7 +689,7 @@ configure_security_group() {
     fi
 
     # Step 4: Configure public access for buildbox ports
-    configure_public_ports
+    configure_public_ports "$collected_ips" "$collected_descriptions"
 
     # Step 5: Final verification
     echo -e "\n${BLUE}🔍 ${SG_NAME} Final Configuration${NC}"
@@ -648,9 +741,14 @@ echo "================================================================"
 # Note for users about public access
 if [ "${#SG_TARGETS[@]}" -gt 1 ] || [[ " ${SG_TARGETS[@]} " =~ " buildbox " ]]; then
     echo ""
-    echo -e "${YELLOW}💡 Note about browser access:${NC}"
-    echo "Ports 8443 and 8444 will be opened to everyone (0.0.0.0/0) on the build box."
-    echo "You only need to add IPs here for SSH/admin access, NOT for browser clients."
+    echo -e "${YELLOW}💡 Note about Web Demo Ports (8443, 8444):${NC}"
+    echo "You'll choose whether to make these ports public or restricted."
+    echo ""
+    echo "  • Public (0.0.0.0/0): Anyone can access - easier, less secure"
+    echo "  • Restricted: Only specific IPs - better security, recommended by Wiz"
+    echo ""
+    echo "IPs you add below will be used for SSH (22) on all instances."
+    echo "For restricted web access, you can reuse these IPs or add different ones."
     echo ""
 fi
 
