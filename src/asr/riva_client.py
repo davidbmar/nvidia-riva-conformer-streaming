@@ -75,9 +75,22 @@ class RivaConfig:
     
     # Performance settings
     max_batch_size: int = int(os.getenv("RIVA_MAX_BATCH_SIZE", "8"))
-    chunk_size_bytes: int = int(os.getenv("RIVA_CHUNK_SIZE_BYTES", "8192"))
+    chunk_size_bytes: int = int(os.getenv("RIVA_CHUNK_SIZE_BYTES", "16384"))
     enable_partials: bool = os.getenv("RIVA_ENABLE_PARTIAL_RESULTS", "true").lower() == "true"
     partial_interval_ms: int = int(os.getenv("RIVA_PARTIAL_RESULT_INTERVAL_MS", "300"))
+
+    # Advanced Riva 2.19.0 Features
+    enable_transcript_buffer: bool = os.getenv("RIVA_ENABLE_TRANSCRIPT_BUFFER", "true").lower() == "true"
+    transcript_buffer_size: int = int(os.getenv("RIVA_TRANSCRIPT_BUFFER_SIZE", "500"))
+    endpointing_model: str = os.getenv("RIVA_ENDPOINTING_MODEL", "vad")
+    enable_two_pass_eou: bool = os.getenv("RIVA_ENABLE_TWO_PASS_EOU", "true").lower() == "true"
+    vad_stop_history_ms: int = int(os.getenv("RIVA_VAD_STOP_HISTORY_MS", "500"))
+    stop_history_eou_ms: int = int(os.getenv("RIVA_STOP_HISTORY_EOU_MS", "200"))
+
+    # Word Boosting
+    enable_word_boosting: bool = os.getenv("RIVA_ENABLE_WORD_BOOSTING", "true").lower() == "true"
+    word_boost_score: float = float(os.getenv("RIVA_WORD_BOOST_SCORE", "50.0"))
+    boosted_words: str = os.getenv("RIVA_BOOSTED_WORDS", "")
 
 
 class RivaASRClient:
@@ -223,6 +236,47 @@ class RivaASRClient:
             return
         
         try:
+            # Build custom configuration dict for Riva 2.19.0 advanced features
+            custom_config = {}
+
+            # Streaming transcript buffer (improves punctuation accuracy)
+            if self.config.enable_transcript_buffer:
+                custom_config["keep_transcript_buffer"] = "true"
+                custom_config["transcript_buffer_size"] = str(self.config.transcript_buffer_size)
+
+            # VAD-based endpointing (better accuracy on noisy audio)
+            if self.config.endpointing_model == "vad":
+                custom_config["endpointing_model"] = "vad"
+                custom_config["vad_stop_history"] = str(self.config.vad_stop_history_ms)
+
+            # Two-pass end-of-utterance detection
+            if self.config.enable_two_pass_eou:
+                custom_config["enable_two_pass_eou"] = "true"
+                custom_config["stop_history_eou"] = str(self.config.stop_history_eou_ms)
+
+            # Build speech contexts for word boosting
+            speech_contexts = []
+
+            # Add hotwords from parameter (runtime)
+            if hotwords:
+                speech_contexts.append(
+                    riva_asr_pb2.SpeechContext(
+                        phrases=hotwords,
+                        boost=self.config.word_boost_score
+                    )
+                )
+
+            # Add boosted words from configuration (if enabled)
+            if self.config.enable_word_boosting and self.config.boosted_words:
+                boosted_list = [w.strip() for w in self.config.boosted_words.split(',') if w.strip()]
+                if boosted_list:
+                    speech_contexts.append(
+                        riva_asr_pb2.SpeechContext(
+                            phrases=boosted_list,
+                            boost=self.config.word_boost_score
+                        )
+                    )
+
             # Create streaming config
             config = riva.client.StreamingRecognitionConfig(
                 config=riva.client.RecognitionConfig(
@@ -235,10 +289,8 @@ class RivaASRClient:
                     enable_word_time_offsets=self.config.enable_word_offsets,
                     verbatim_transcripts=False,
                     profanity_filter=False,
-                    # speech_contexts for hotwords if provided
-                    speech_contexts=[
-                        riva_asr_pb2.SpeechContext(phrases=hotwords, boost=10.0)
-                    ] if hotwords else None
+                    speech_contexts=speech_contexts if speech_contexts else [],
+                    custom_configuration=custom_config if custom_config else {}
                 ),
                 interim_results=enable_partials and self.config.enable_partials
             )
