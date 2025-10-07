@@ -247,8 +247,8 @@ list_current_rules() {
     echo -e "\n${CYAN}Configured IP Addresses:${NC}"
     echo "----------------------------------------"
 
-    # Get unique IPs across all ports
-    local unique_ips=$(echo "$rules" | jq -r '.[].IpRanges[].CidrIp' 2>/dev/null | sed 's|/32||g' | sort -u)
+    # Get unique IPs across all ports (keep CIDR notation for 0.0.0.0/0, strip /32 for others)
+    local unique_ips=$(echo "$rules" | jq -r '.[].IpRanges[].CidrIp' 2>/dev/null | sed 's|^\([^/]*\)/32$|\1|' | sort -u)
 
     if [ -z "$unique_ips" ]; then
         echo "No IP addresses configured"
@@ -264,13 +264,15 @@ list_current_rules() {
         IP_ARRAY[$index]="$ip"
         IP_INDEX_MAP["$ip"]=$index
 
-        # Check which ports this IP can access
+        # Check ALL ports this IP can access (not just PORTS array)
         local accessible_ports=""
-        for port in "${PORTS[@]}"; do
-            if echo "$rules" | jq -e ".[] | select(.FromPort == $port) | .IpRanges[] | select(.CidrIp == \"${ip}/32\")" > /dev/null 2>&1; then
-                accessible_ports="${accessible_ports}${port} "
-            fi
-        done
+        if [ "$ip" = "0.0.0.0/0" ]; then
+            # Handle 0.0.0.0/0 specially
+            accessible_ports=$(echo "$rules" | jq -r '.[] | select(.IpRanges[].CidrIp == "0.0.0.0/0") | .FromPort' 2>/dev/null | sort -n | tr '\n' ' ')
+        else
+            # Regular IP
+            accessible_ports=$(echo "$rules" | jq -r --arg ip "${ip}/32" '.[] | select(.IpRanges[].CidrIp == $ip) | .FromPort' 2>/dev/null | sort -n | tr '\n' ' ')
+        fi
 
         # Get description if available from .env
         local description=""
@@ -289,6 +291,92 @@ list_current_rules() {
     done <<< "$unique_ips"
 
     echo ""
+}
+
+# Function to clean up obsolete ports (ports in AWS but not in PORTS array)
+cleanup_obsolete_ports() {
+    echo -e "\n${CYAN}🧹 Checking for obsolete ports...${NC}"
+    echo "----------------------------------------"
+
+    # Get all currently configured ports in AWS
+    local aws_ports=$(aws ec2 describe-security-groups \
+        --region "$AWS_REGION" \
+        --group-ids "$TARGET_SG" \
+        --query "SecurityGroups[0].IpPermissions[].FromPort" \
+        --output text 2>/dev/null | tr '\t' '\n' | sort -n | uniq)
+
+    if [ -z "$aws_ports" ]; then
+        echo "No existing ports found"
+        return
+    fi
+
+    # Find ports in AWS that are NOT in our PORTS array
+    local obsolete_ports=()
+    while IFS= read -r aws_port; do
+        [ -z "$aws_port" ] && continue
+
+        local is_obsolete=true
+        for configured_port in "${PORTS[@]}"; do
+            if [ "$aws_port" = "$configured_port" ]; then
+                is_obsolete=false
+                break
+            fi
+        done
+
+        if $is_obsolete; then
+            obsolete_ports+=("$aws_port")
+        fi
+    done <<< "$aws_ports"
+
+    if [ ${#obsolete_ports[@]} -eq 0 ]; then
+        echo -e "${GREEN}✓ No obsolete ports found${NC}"
+        return
+    fi
+
+    echo -e "${YELLOW}Found obsolete ports (not in current configuration):${NC}"
+    for port in "${obsolete_ports[@]}"; do
+        echo "  • Port $port"
+    done
+    echo ""
+    echo "Current configuration expects only: ${PORTS[*]}"
+    echo ""
+    read -p "Remove these obsolete ports? (Y/n): " -n 1 -r
+    echo
+
+    if [[ $REPLY =~ ^[Nn]$ ]]; then
+        echo -e "${YELLOW}Keeping obsolete ports${NC}"
+        return
+    fi
+
+    # Remove all rules for obsolete ports
+    echo -e "\n${CYAN}Removing obsolete ports...${NC}"
+    for port in "${obsolete_ports[@]}"; do
+        echo -n "  Removing all rules for port $port..."
+
+        # Get all CIDRs for this port
+        local cidrs=$(aws ec2 describe-security-groups \
+            --region "$AWS_REGION" \
+            --group-ids "$TARGET_SG" \
+            --output json 2>/dev/null | jq -r --arg port "$port" '
+            .SecurityGroups[0].IpPermissions[] |
+            select(.FromPort == ($port | tonumber)) |
+            .IpRanges[].CidrIp
+            ')
+
+        # Remove each CIDR
+        local removed=0
+        while IFS= read -r cidr; do
+            [ -z "$cidr" ] && continue
+            aws ec2 revoke-security-group-ingress \
+                --region "$AWS_REGION" \
+                --group-id "$TARGET_SG" \
+                --protocol tcp \
+                --port "$port" \
+                --cidr "$cidr" >/dev/null 2>&1 && ((removed++))
+        done <<< "$cidrs"
+
+        echo -e " ${GREEN}✓${NC} (removed $removed rule(s))"
+    done
 }
 
 # Function to delete selected IPs
@@ -488,6 +576,9 @@ configure_security_group() {
 
     # Step 1: List current rules
     list_current_rules
+
+    # Step 1.5: Clean up obsolete ports (ports not in current config)
+    cleanup_obsolete_ports
 
     # Step 2: Optional - Delete existing IPs
     delete_selected_ips
