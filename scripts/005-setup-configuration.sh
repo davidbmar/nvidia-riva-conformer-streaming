@@ -37,6 +37,7 @@ declare -A CONFIG_KEYS=(
     [14]="ENABLE_HTTPS"
     [15]="LOG_LEVEL"
     [16]="WS_MAX_CONNECTIONS"
+    [17]="DEMO_PORT"
 )
 
 # Default values
@@ -57,6 +58,7 @@ declare -A CONFIG_VALUES=(
     [ENABLE_HTTPS]="yes"
     [LOG_LEVEL]="INFO"
     [WS_MAX_CONNECTIONS]="100"
+    [DEMO_PORT]="8444"
 )
 
 # Short display labels for preview
@@ -77,6 +79,7 @@ declare -A CONFIG_LABELS=(
     [ENABLE_HTTPS]="Enable HTTPS"
     [LOG_LEVEL]="Log Level"
     [WS_MAX_CONNECTIONS]="Max Connections"
+    [DEMO_PORT]="Demo Server Port"
 )
 
 # Flag to track if this is first run
@@ -856,6 +859,68 @@ EOF
     read
 }
 
+show_help_17() {
+    cat << 'EOF'
+
+╔════════════════════════════════════════════════════════════════════════╗
+║ HELP: Demo Server Port                                                ║
+╚════════════════════════════════════════════════════════════════════════╝
+
+WHAT IT IS:
+  TCP port where the HTTPS demo web server listens for browser connections.
+
+DEFAULT: 8444 (Alternate HTTPS port)
+
+WHAT IT DOES:
+  The demo server runs on the BUILD BOX and:
+  • Serves the demo HTML/JS UI (demo.html)
+  • Provides test interface for speech transcription
+  • Runs alongside WebSocket bridge
+  • Uses same SSL certificates as WebSocket bridge
+
+ARCHITECTURE:
+  Browser → HTTPS (port 8444) → Demo Server (build box)
+         ↓
+         WSS (port 8443) → WebSocket Bridge → gRPC → Riva (GPU)
+
+WHY 8444?
+  • Standard alternate HTTPS port
+  • Separates demo UI from WebSocket API
+  • Usually allowed through firewalls
+  • Avoids conflict with WebSocket port (8443)
+
+WHEN TO CHANGE:
+  • Port 8444 already in use
+  • Corporate firewall requires specific port
+  • Running multiple demo servers
+
+RELATIONSHIP TO APP_PORT (#13):
+  • APP_PORT (8443) - WebSocket bridge API endpoint
+  • DEMO_PORT (8444) - Demo UI web server
+  • Both can run on same build box
+  • Demo page connects to WebSocket via APP_PORT
+
+FIREWALL:
+  Ensure port 8444 is open:
+  • AWS security group (auto-configured)
+  • Corporate firewall (manual)
+  • Local firewall: sudo ufw allow 8444/tcp
+
+ACCESS:
+  After deployment, access demo at:
+  https://<BUILD-BOX-IP>:8444/demo.html
+
+PRODUCTION:
+  For production deployments:
+  • Integrate with your own UI
+  • Use reverse proxy (nginx/ALB) on standard ports
+  • Demo server is optional, WebSocket bridge is required
+
+Press Enter to continue...
+EOF
+    read
+}
+
 show_model_info() {
     cat << 'EOF'
 
@@ -1378,6 +1443,7 @@ GOLDEN_WAV_S3=
 # ============================================================================
 APP_HOST=0.0.0.0
 APP_PORT=${CONFIG_VALUES[APP_PORT]}
+DEMO_PORT=${CONFIG_VALUES[DEMO_PORT]}
 APP_SSL_CERT=/opt/riva/certs/server.crt
 APP_SSL_KEY=/opt/riva/certs/server.key
 
