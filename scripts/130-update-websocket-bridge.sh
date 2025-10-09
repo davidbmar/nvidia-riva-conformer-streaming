@@ -42,9 +42,15 @@ fi
 # Load configuration
 source "$ENV_FILE"
 
+# Load common functions (for resolve_gpu_ip)
+COMMON_FUNCTIONS="$SCRIPT_DIR/riva-common-functions.sh"
+if [ -f "$COMMON_FUNCTIONS" ]; then
+    source "$COMMON_FUNCTIONS"
+fi
+
 # Required variables
 REQUIRED_VARS=(
-    "GPU_INSTANCE_IP"
+    "GPU_INSTANCE_ID"
     "RIVA_PORT"
 )
 
@@ -54,6 +60,16 @@ for var in "${REQUIRED_VARS[@]}"; do
         exit 1
     fi
 done
+
+# Auto-resolve GPU IP from instance ID
+echo "Resolving GPU IP from instance ID: $GPU_INSTANCE_ID..."
+GPU_INSTANCE_IP=$(resolve_gpu_ip)
+if [ $? -ne 0 ] || [ -z "$GPU_INSTANCE_IP" ]; then
+    echo "❌ Failed to resolve GPU IP address"
+    exit 1
+fi
+echo "✅ Resolved GPU IP: $GPU_INSTANCE_IP"
+echo ""
 
 # Configuration
 BRIDGE_DEPLOY_DIR="/opt/riva/nvidia-parakeet-ver-6"
@@ -233,9 +249,9 @@ echo "  • Bridge Service: $BRIDGE_SERVICE"
 echo "  • Service Status: $(systemctl is-active $BRIDGE_SERVICE 2>/dev/null || echo 'unknown')"
 echo ""
 echo "WebSocket Endpoint:"
-echo "  • wss://$(curl -s http://checkip.amazonaws.com):8443"
+echo "  • wss://$(curl -s http://checkip.amazonaws.com):${APP_PORT:-8443}"
 echo ""
 echo "Next Steps:"
-echo "  • Test demo: https://$(curl -s http://checkip.amazonaws.com):8444/demo.html"
+echo "  • Test demo: https://$(curl -s http://checkip.amazonaws.com):${DEMO_PORT:-8444}/demo.html"
 echo "  • Monitor logs: sudo journalctl -u $BRIDGE_SERVICE -f"
 echo ""
