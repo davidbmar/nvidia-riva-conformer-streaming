@@ -45,10 +45,16 @@ fi
 # Load configuration
 source "$ENV_FILE"
 
+# Load common functions (for resolve_gpu_ip)
+COMMON_FUNCTIONS="$SCRIPT_DIR/riva-common-functions.sh"
+if [ -f "$COMMON_FUNCTIONS" ]; then
+    source "$COMMON_FUNCTIONS"
+fi
+
 # Required variables
 REQUIRED_VARS=(
     "AWS_REGION"
-    "GPU_INSTANCE_IP"
+    "GPU_INSTANCE_ID"
     "SSH_KEY_NAME"
     "RIVA_PORT"
     "RIVA_HTTP_PORT"
@@ -61,6 +67,17 @@ for var in "${REQUIRED_VARS[@]}"; do
         exit 1
     fi
 done
+
+# Auto-resolve GPU IP from instance ID
+echo "Resolving GPU IP from instance ID: $GPU_INSTANCE_ID..."
+GPU_INSTANCE_IP=$(resolve_gpu_ip)
+if [ $? -ne 0 ] || [ -z "$GPU_INSTANCE_IP" ]; then
+    echo "❌ Failed to resolve GPU IP address"
+    echo "Make sure GPU_INSTANCE_ID is correct and AWS credentials are configured"
+    exit 1
+fi
+echo "✅ Resolved GPU IP: $GPU_INSTANCE_IP"
+echo ""
 
 # Configuration
 SSH_KEY="$HOME/.ssh/${SSH_KEY_NAME}.pem"
@@ -188,169 +205,140 @@ fi
 echo ""
 
 # ============================================================================
-# Step 4: Pull RIVA Docker Image
+# Step 4: Load RIVA Docker Image (S3-first, NGC fallback)
 # ============================================================================
-echo "Step 4/6: Pulling RIVA Docker image..."
-
-# Check if NGC API key is set
-if [ -z "${NGC_API_KEY:-}" ]; then
-    echo "❌ NGC_API_KEY not set in .env"
-    echo "NVIDIA Container Registry access is required to pull RIVA images."
-    rm -rf "$TEMP_DIR"
-    exit 1
-fi
+echo "Step 4/6: Loading RIVA Docker image..."
 
 PULL_START=$(date +%s)
 
-# Login to NGC and pull image on GPU instance
-ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
-    "NGC_API_KEY='${NGC_API_KEY}' RIVA_VERSION='${RIVA_VERSION}' DOCKER_PULL_TIMEOUT='${DOCKER_PULL_TIMEOUT}'" << 'PULL_IMAGE'
-set -euo pipefail
+# Check if image already exists on GPU
+if ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
+    "docker images | grep -q 'nvcr.io/nvidia/riva/riva-speech.*${RIVA_VERSION}'"; then
+    echo "✅ RIVA image ${RIVA_VERSION} already present on GPU"
+    PULL_DURATION=0
+else
+    echo "Checking disk space on GPU..."
+    FREE_SPACE=$(ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
+        "df -BG / | tail -1 | awk '{print \$4}' | sed 's/G//'")
 
-RIVA_IMAGE="nvcr.io/nvidia/riva/riva-speech:${RIVA_VERSION}"
-
-# Check if image already exists
-if docker images | grep -q "nvcr.io/nvidia/riva/riva-speech.*${RIVA_VERSION}"; then
-    echo "✅ RIVA image ${RIVA_VERSION} already present"
-    docker images | grep "riva-speech"
-    exit 0
-fi
-
-echo "Logging into NVIDIA NGC..."
-echo "$NGC_API_KEY" | docker login nvcr.io --username '$oauthtoken' --password-stdin >/dev/null 2>&1
-if [ $? -ne 0 ]; then
-    echo "❌ NGC login failed"
-    exit 1
-fi
-echo "✅ NGC login successful"
-
-echo ""
-echo "Pulling RIVA image (19GB - this will take 10-15 minutes)..."
-echo "Image: ${RIVA_IMAGE}"
-echo ""
-
-# Pull image in background and monitor progress
-docker pull "${RIVA_IMAGE}" > /tmp/docker-pull.log 2>&1 &
-PULL_PID=$!
-
-# Monitor pull progress
-ELAPSED=0
-INTERVAL=10
-while kill -0 $PULL_PID 2>/dev/null; do
-    if [ $ELAPSED -ge $DOCKER_PULL_TIMEOUT ]; then
-        echo "❌ Docker pull timeout after ${DOCKER_PULL_TIMEOUT}s"
-        kill $PULL_PID 2>/dev/null
-        tail -30 /tmp/docker-pull.log
+    if [ "$FREE_SPACE" -lt 25 ]; then
+        echo "❌ Insufficient disk space: ${FREE_SPACE}GB free (need 25GB+)"
+        echo "Run: ssh ubuntu@${GPU_INSTANCE_IP} 'docker system prune -af'"
+        rm -rf "$TEMP_DIR"
         exit 1
     fi
+    echo "✅ Disk space OK: ${FREE_SPACE}GB free"
 
-    # Show progress every 30 seconds
-    if [ $((ELAPSED % 30)) -eq 0 ]; then
-        COMPLETED=$(grep -c "Pull complete" /tmp/docker-pull.log 2>/dev/null || echo "0")
-        echo "⏳ Pulling... ${ELAPSED}s elapsed, ${COMPLETED} layers completed"
+    # Try S3 first (faster, no API key needed, streaming load)
+    if [ -n "${S3_RIVA_CONTAINER:-}" ]; then
+        echo ""
+        echo "Method 1: Loading from S3 (streaming, no disk storage needed)..."
+        echo "Source: ${S3_RIVA_CONTAINER}"
+        echo "This will take 2-3 minutes..."
+
+        if ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
+            "aws s3 cp '${S3_RIVA_CONTAINER}' - 2>/dev/null | docker load"; then
+            echo "✅ RIVA image loaded from S3"
+        else
+            echo "⚠️  S3 load failed (aws cli may not be installed on GPU), trying NGC..."
+
+            # Fallback to NGC
+            if [ -z "${NGC_API_KEY:-}" ]; then
+                echo "❌ NGC_API_KEY not set and S3 load failed"
+                echo "Either install aws cli on GPU or set NGC_API_KEY in .env"
+                rm -rf "$TEMP_DIR"
+                exit 1
+            fi
+
+            echo "Logging into NGC and pulling image..."
+            ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
+                "echo '${NGC_API_KEY}' | docker login nvcr.io --username '\$oauthtoken' --password-stdin >/dev/null 2>&1 && \
+                 docker pull nvcr.io/nvidia/riva/riva-speech:${RIVA_VERSION}"
+
+            if [ $? -eq 0 ]; then
+                echo "✅ RIVA image pulled from NGC"
+            else
+                echo "❌ Both S3 and NGC loading failed"
+                rm -rf "$TEMP_DIR"
+                exit 1
+            fi
+        fi
+    else
+        echo "⚠️  S3_RIVA_CONTAINER not configured in .env, using NGC..."
+
+        # NGC-only path
+        if [ -z "${NGC_API_KEY:-}" ]; then
+            echo "❌ NGC_API_KEY not set"
+            echo "Set S3_RIVA_CONTAINER or NGC_API_KEY in .env"
+            rm -rf "$TEMP_DIR"
+            exit 1
+        fi
+
+        echo "Logging into NGC and pulling image (this will take 10-15 minutes)..."
+        ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
+            "echo '${NGC_API_KEY}' | docker login nvcr.io --username '\$oauthtoken' --password-stdin >/dev/null 2>&1 && \
+             docker pull nvcr.io/nvidia/riva/riva-speech:${RIVA_VERSION}"
+
+        if [ $? -ne 0 ]; then
+            echo "❌ NGC pull failed"
+            rm -rf "$TEMP_DIR"
+            exit 1
+        fi
+        echo "✅ RIVA image pulled from NGC"
     fi
-
-    sleep $INTERVAL
-    ELAPSED=$((ELAPSED + INTERVAL))
-done
-
-# Check if pull was successful
-wait $PULL_PID
-PULL_EXIT=$?
-
-if [ $PULL_EXIT -ne 0 ]; then
-    echo "❌ Docker pull failed"
-    tail -50 /tmp/docker-pull.log
-    exit 1
-fi
-
-# Verify image is present
-if docker images | grep -q "nvcr.io/nvidia/riva/riva-speech.*${RIVA_VERSION}"; then
-    echo "✅ RIVA image pulled successfully"
-    docker images | grep "riva-speech"
-else
-    echo "❌ Image pull appeared to succeed but image not found"
-    docker images
-    exit 1
-fi
-PULL_IMAGE
-
-if [ $? -ne 0 ]; then
-    echo "❌ Failed to pull RIVA Docker image"
-    rm -rf "$TEMP_DIR"
-    exit 1
 fi
 
 PULL_END=$(date +%s)
 PULL_DURATION=$((PULL_END - PULL_START))
 
-echo "✅ RIVA image ready (pulled in ${PULL_DURATION}s)"
+echo "✅ RIVA image ready (loaded in ${PULL_DURATION}s)"
 echo ""
 
 # ============================================================================
-# Step 5: Start RIVA server
+# Step 5: Start RIVA Server (Fixed - no heredoc)
 # ============================================================================
 echo "Step 5/6: Starting RIVA server..."
 
 START_START=$(date +%s)
 
-ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
-    "RIVA_VERSION='${RIVA_VERSION}' RIVA_PORT='${RIVA_PORT}' RIVA_HTTP_PORT='${RIVA_HTTP_PORT}'" << 'START_SCRIPT'
-set -euo pipefail
+echo "Starting RIVA with 8GB CUDA memory pool..."
+echo "Note: Conformer-CTC requires 8GB CUDA memory (default 1GB causes OOM)"
 
-echo "Starting RIVA server with 8GB CUDA memory pool..."
-echo "Note: Conformer-CTC requires 8GB CUDA memory (default 1GB causes out-of-memory errors)"
-
-# Stop any existing container
-docker stop riva-server 2>/dev/null || true
-docker rm riva-server 2>/dev/null || true
-
-# Start with manual tritonserver + riva_server to control CUDA memory
+# Build docker run command (avoiding heredoc escaping issues)
+# Stop existing container and start new one
+DOCKER_CMD="docker stop riva-server 2>/dev/null || true && \
+docker rm riva-server 2>/dev/null || true && \
 docker run -d --gpus all --name riva-server \
-    -p ${RIVA_PORT}:50051 \
-    -p ${RIVA_HTTP_PORT}:8000 \
-    -p 8001:8001 \
-    -p 8002:8002 \
-    -v /opt/riva/models_conformer_fast:/data/models \
-    nvcr.io/nvidia/riva/riva-speech:${RIVA_VERSION} \
-    bash -c '
-        # Start Triton with 8GB CUDA memory pool (Conformer needs >1GB)
-        tritonserver \
-            --model-repository=/data/models \
-            --cuda-memory-pool-byte-size=0:8000000000 \
-            --log-verbose=0 \
-            --log-info=true \
-            --exit-on-error=false &
+  -p ${RIVA_PORT}:50051 \
+  -p ${RIVA_HTTP_PORT}:8000 \
+  -p 8001:8001 \
+  -p 8002:8002 \
+  -v /opt/riva/models_conformer_fast:/data/models \
+  nvcr.io/nvidia/riva/riva-speech:${RIVA_VERSION} \
+  bash -c 'tritonserver --model-repository=/data/models --cuda-memory-pool-byte-size=0:8000000000 --log-info=true --exit-on-error=false & sleep 20 && /opt/riva/bin/riva_server --asr_service=true --nlp_service=false --tts_service=false & wait'"
 
-        # Wait for models to load
-        sleep 20
-
-        # Start RIVA gRPC server
-        /opt/riva/bin/riva_server \
-            --asr_service=true \
-            --nlp_service=false \
-            --tts_service=false &
-
-        wait
-    '
-
-# Wait a moment for container to initialize
-sleep 3
-
-# Check if container is running
-if docker ps | grep -q riva-server; then
-    echo "✅ RIVA server container started"
-    CONTAINER_ID=$(docker ps --filter name=riva-server --format '{{.ID}}')
-    echo "Container ID: $CONTAINER_ID"
-else
-    echo "❌ RIVA server failed to start"
-    docker logs riva-server 2>&1 | tail -20 || true
-    exit 1
-fi
-START_SCRIPT
+# Execute via direct SSH (not heredoc - this fixes the bug)
+CONTAINER_ID=$(ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" "$DOCKER_CMD")
 
 if [ $? -ne 0 ]; then
-    echo "❌ Failed to start RIVA server"
+    echo "❌ Docker run command failed"
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
+
+# Wait for container to initialize
+sleep 5
+
+# Validate container is actually running (not just started and exited)
+RUNNING=$(ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
+    "docker ps --filter name=riva-server --format '{{.Status}}' | grep -c Up" || echo "0")
+
+if [ "$RUNNING" -eq "0" ]; then
+    echo "❌ Container 'riva-server' is not running"
+    echo ""
+    echo "Container logs:"
+    ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
+        "docker logs riva-server 2>&1 | tail -50" || true
     rm -rf "$TEMP_DIR"
     exit 1
 fi
@@ -358,7 +346,8 @@ fi
 START_END=$(date +%s)
 START_DURATION=$((START_END - START_START))
 
-echo "✅ RIVA server started in ${START_DURATION}s"
+echo "✅ RIVA server started (${START_DURATION}s)"
+echo "Container ID: ${CONTAINER_ID:0:12}"
 echo ""
 
 # ============================================================================
@@ -398,8 +387,26 @@ done
 if [ $ELAPSED -ge $READY_TIMEOUT ]; then
     echo "❌ RIVA server did not become ready within ${READY_TIMEOUT}s"
     echo ""
-    echo "Container logs:"
-    ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" "docker logs riva-server --tail 50" || true
+
+    # Enhanced troubleshooting information
+    echo "Container status:"
+    ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
+        "docker ps -a --filter name=riva-server" || true
+    echo ""
+
+    echo "Container logs (last 100 lines):"
+    ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
+        "docker logs riva-server --tail 100 2>&1" || true
+    echo ""
+
+    echo "Troubleshooting Commands:"
+    echo "  1. Check GPU: ssh ubuntu@${GPU_INSTANCE_IP} nvidia-smi"
+    echo "  2. Check models: ssh ubuntu@${GPU_INSTANCE_IP} ls -lh /opt/riva/models_conformer_fast/"
+    echo "  3. Check logs: ssh ubuntu@${GPU_INSTANCE_IP} docker logs riva-server"
+    echo "  4. Interactive debug: ssh ubuntu@${GPU_INSTANCE_IP} 'docker exec -it riva-server bash'"
+    echo "  5. Restart container: ssh ubuntu@${GPU_INSTANCE_IP} 'docker restart riva-server'"
+    echo ""
+
     rm -rf "$TEMP_DIR"
     exit 1
 fi

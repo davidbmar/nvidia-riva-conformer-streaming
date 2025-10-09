@@ -542,3 +542,42 @@ show_system_resources() {
         df -h /opt | awk 'NR==2{printf \"   Disk: %s (%s used, %s available)\\n\", \$5, \$3, \$4}'
     "
 }
+
+# ============================================================================
+# Auto-resolve GPU IP from instance ID
+# ============================================================================
+# Resolves current public IP address from GPU_INSTANCE_ID via AWS API
+# Falls back to GPU_INSTANCE_IP from .env if AWS query fails
+#
+# Returns: Current public IP address
+# Exit Code: 0 on success, 1 if no IP could be resolved
+resolve_gpu_ip() {
+    local ip=""
+
+    # Priority 1: Resolve from instance ID via AWS API
+    if [ -n "${GPU_INSTANCE_ID:-}" ]; then
+        ip=$(aws ec2 describe-instances \
+            --instance-ids "$GPU_INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' \
+            --output text \
+            --region "${AWS_REGION:-us-east-2}" 2>/dev/null || true)
+
+        # Check if IP is valid (not "None" or empty)
+        if [ -n "$ip" ] && [ "$ip" != "None" ]; then
+            echo "$ip"
+            return 0
+        fi
+    fi
+
+    # Priority 2: Fallback to .env IP
+    if [ -n "${GPU_INSTANCE_IP:-}" ]; then
+        echo "${GPU_INSTANCE_IP}"
+        return 0
+    fi
+
+    # No IP could be resolved
+    log_error "Failed to resolve GPU IP: GPU_INSTANCE_ID and GPU_INSTANCE_IP both unavailable"
+    return 1
+}
+
+export -f resolve_gpu_ip
