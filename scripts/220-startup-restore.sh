@@ -23,7 +23,26 @@ exec > >(tee -a "logs/$(basename $0 .sh)-$(date +%Y%m%d-%H%M%S).log") 2>&1
 source "$(dirname "$0")/riva-common-functions.sh"
 load_environment
 
-GPU_INSTANCE_ID="${GPU_INSTANCE_ID:-i-06a36632f4d99f97b}"
+# Validate GPU_INSTANCE_ID is set
+if [ -z "${GPU_INSTANCE_ID:-}" ]; then
+    log_error "❌ GPU_INSTANCE_ID not set in .env"
+    echo ""
+    echo "To fix this, you have two options:"
+    echo ""
+    echo "Option 1: Use an existing GPU instance"
+    echo "  1. List available GPUs:"
+    echo "     aws ec2 describe-instances --region us-east-2 --filters \"Name=instance-type,Values=g4dn.*\" --output table"
+    echo ""
+    echo "  2. Start the GPU and set instance ID:"
+    echo "     ./scripts/730-start-gpu-instance.sh --instance-id i-XXXXXXXXX"
+    echo "     (This will update .env with GPU_INSTANCE_ID)"
+    echo ""
+    echo "Option 2: Create a new GPU instance"
+    echo "  ./scripts/020-deploy-gpu-instance.sh"
+    echo ""
+    exit 1
+fi
+
 REGION="${AWS_REGION:-us-east-2}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/dbm-sep23-2025.pem}"
 

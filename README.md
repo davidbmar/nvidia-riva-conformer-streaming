@@ -61,16 +61,37 @@ aws configure
 
 ### Step 3: Deploy GPU Instance
 
+**Option A: Create New GPU Instance**
+
 ```bash
 # Creates AWS g4dn.xlarge instance with NVIDIA drivers
-./scripts/020-create-gpu-instance.sh
+./scripts/020-deploy-gpu-instance.sh
 
 # This will:
 # - Launch EC2 instance
 # - Install NVIDIA drivers
 # - Setup Docker + NVIDIA runtime
 # - Configure security groups
-# - Save GPU IP to .env
+# - Save GPU_INSTANCE_ID to .env
+```
+
+**Option B: Use Existing GPU Instance**
+
+```bash
+# 1. List your existing GPU instances
+aws ec2 describe-instances \
+  --region us-east-2 \
+  --filters "Name=instance-type,Values=g4dn.*" \
+  --output table
+
+# 2. Start the GPU and configure .env
+./scripts/730-start-gpu-instance.sh --instance-id i-XXXXXXXXX
+
+# This will:
+# - Start the instance if stopped
+# - Save GPU_INSTANCE_ID to .env
+# - Save GPU_INSTANCE_IP to .env
+# - Update RIVA_HOST in .env
 ```
 
 ### Step 4: Deploy Conformer-CTC Model
