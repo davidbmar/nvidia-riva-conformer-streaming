@@ -10,6 +10,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="$PROJECT_ROOT/.env"
 
+# Source common functions (for logging)
+source "$SCRIPT_DIR/riva-common-functions.sh"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -111,9 +114,9 @@ if [ "$TARGET_MODE" == "auto" ]; then
     echo -e "${GREEN}🎯 Auto-detected ${#SG_TARGETS[@]} security group(s) to configure:${NC}"
     for target in "${SG_TARGETS[@]}"; do
         if [ "$target" == "gpu" ]; then
-            echo "  ✓ GPU Instance ($SECURITY_GROUP_ID) - ports 22, 50051, 8000"
+            echo -e "  ✓ ${BLUE}GPU Instance${NC} (${GPU_INSTANCE_IP:-<gpu-ip>}) - ${SECURITY_GROUP_ID} - ports 22, 50051, 8000"
         else
-            echo "  ✓ Build Box ($BUILDBOX_SECURITY_GROUP) - ports 22, 8443, 8444"
+            echo -e "  ✓ ${BLUE}Build Box${NC} (${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}) - ${BUILDBOX_SECURITY_GROUP} - ports 22, ${APP_PORT:-8443}, ${DEMO_PORT:-8444}"
         fi
     done
     echo ""
@@ -133,6 +136,136 @@ elif [ "$TARGET_MODE" == "buildbox" ]; then
     SG_TARGETS=("buildbox")
 fi
 
+# Function to list current security group rules
+list_current_rules() {
+    local sg_id=$1
+    local sg_name=$2
+
+    # Get instance IP based on sg_name
+    local instance_ip=""
+    if [[ "$sg_name" == "GPU Instance" ]]; then
+        instance_ip="${GPU_INSTANCE_IP:-<gpu-ip>}"
+    elif [[ "$sg_name" == "Build Box" ]]; then
+        instance_ip="${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}"
+    fi
+
+    echo ""
+    echo -e "${CYAN}📋 Current Security Group Rules: ${BLUE}${sg_name}${NC} ${CYAN}(${instance_ip})${NC}"
+    echo -e "Security Group: ${BLUE}${sg_id}${NC}"
+    echo "════════════════════════════════════════════════════════════════════════════════"
+
+    # Get all rules
+    local rules=$(aws ec2 describe-security-groups \
+        --region "$AWS_REGION" \
+        --group-ids "$sg_id" \
+        --query 'SecurityGroups[0].IpPermissions[]' \
+        --output json 2>/dev/null)
+
+    if [ -z "$rules" ] || [ "$rules" == "[]" ]; then
+        echo "   (no rules configured)"
+        echo ""
+        return
+    fi
+
+    # Parse and display rules grouped by port
+    echo "$rules" | jq -r '
+        .[] |
+        {port: .FromPort, cidrs: .IpRanges[].CidrIp} |
+        "\(.port) \(.cidrs)"
+    ' | sort -n | awk '
+        BEGIN {
+            print "   PORT     SOURCE               "
+            print "   ─────────────────────────────────────────────────────────────────────────────"
+        }
+        {
+            printf "   %-8s %-21s\n", $1, $2
+        }
+    '
+    echo ""
+}
+
+# Function to delete all rules from a security group
+delete_all_rules() {
+    local sg_id=$1
+    local sg_name=$2
+
+    log_info "Deleting all rules from ${sg_name} (${sg_id})..."
+
+    # Get all ingress rules
+    local rules=$(aws ec2 describe-security-groups \
+        --region "$AWS_REGION" \
+        --group-ids "$sg_id" \
+        --query 'SecurityGroups[0].IpPermissions' \
+        --output json 2>/dev/null)
+
+    if [ -z "$rules" ] || [ "$rules" == "[]" ]; then
+        log_info "No rules to delete"
+        return
+    fi
+
+    # Revoke all rules at once
+    aws ec2 revoke-security-group-ingress \
+        --region "$AWS_REGION" \
+        --group-id "$sg_id" \
+        --ip-permissions "$rules" >/dev/null 2>&1
+
+    if [ $? -eq 0 ]; then
+        log_success "All rules deleted from ${sg_name}"
+    else
+        log_error "Failed to delete rules from ${sg_name}"
+    fi
+}
+
+# Function to show all current rules and ask if user wants to delete
+show_and_ask_delete() {
+    echo ""
+    echo -e "${YELLOW}═══════════════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}                    CURRENT SECURITY GROUP CONFIGURATION                       ${NC}"
+    echo -e "${YELLOW}═══════════════════════════════════════════════════════════════════════════════${NC}"
+
+    # Show rules for each target
+    for target in "${SG_TARGETS[@]}"; do
+        if [ "$target" == "gpu" ]; then
+            list_current_rules "$SECURITY_GROUP_ID" "GPU Instance"
+        else
+            list_current_rules "$BUILDBOX_SECURITY_GROUP" "Build Box"
+        fi
+    done
+
+    echo ""
+    echo -e "${YELLOW}❓ Do you want to DELETE ALL current rules and start fresh?${NC}"
+    echo ""
+    echo "  1) Yes - Delete all rules and reconfigure from scratch"
+    echo "  2) No  - Keep existing rules and add/update (recommended)"
+    echo ""
+    read -p "Enter choice [1-2] (default: 2): " delete_choice
+    delete_choice=${delete_choice:-2}
+
+    if [ "$delete_choice" == "1" ]; then
+        echo ""
+        log_warn "⚠️  This will DELETE ALL security group rules!"
+        read -p "Are you SURE? Type 'yes' to confirm: " confirm
+
+        if [ "$confirm" == "yes" ]; then
+            for target in "${SG_TARGETS[@]}"; do
+                if [ "$target" == "gpu" ]; then
+                    delete_all_rules "$SECURITY_GROUP_ID" "GPU Instance"
+                else
+                    delete_all_rules "$BUILDBOX_SECURITY_GROUP" "Build Box"
+                fi
+            done
+            echo ""
+            log_success "All rules deleted. Starting fresh configuration..."
+        else
+            log_info "Deletion cancelled. Proceeding with add/update mode..."
+        fi
+    else
+        log_info "Keeping existing rules. Will add/update as needed..."
+    fi
+
+    echo ""
+}
+
 # Function to get port configuration for a target
 get_port_config() {
     local target=$1
@@ -146,9 +279,9 @@ get_port_config() {
             IFS=',' read -ra PORT_DESCRIPTIONS <<< "$BUILDBOX_SG_PORT_DESCRIPTIONS"
             IFS=',' read -ra PUBLIC_PORTS <<< "${BUILDBOX_SG_PUBLIC_PORTS:-}"
         else
-            PORTS=(22 8443 8444)
+            PORTS=(22 ${APP_PORT:-8443} ${DEMO_PORT:-8444})
             PORT_DESCRIPTIONS=("SSH" "WebSocket Bridge (WSS)" "HTTPS Demo Server")
-            PUBLIC_PORTS=(8443 8444)
+            PUBLIC_PORTS=(${APP_PORT:-8443} ${DEMO_PORT:-8444})
         fi
     else
         # GPU mode
@@ -226,73 +359,6 @@ get_current_ip() {
     fi
 }
 
-# Function to list current security group rules
-list_current_rules() {
-    echo -e "\n${CYAN}📋 Current Security Group Rules (${SG_NAME}: ${TARGET_SG})${NC}"
-    echo "================================================================"
-
-    # Get all rules and parse them
-    local rules=$(aws ec2 describe-security-groups \
-        --region "$AWS_REGION" \
-        --group-ids "$TARGET_SG" \
-        --query "SecurityGroups[0].IpPermissions[]" \
-        --output json 2>/dev/null)
-
-    if [ -z "$rules" ] || [ "$rules" = "[]" ]; then
-        echo -e "${YELLOW}No rules configured yet${NC}"
-        return
-    fi
-
-    # Parse and display rules in a nice format
-    echo -e "\n${CYAN}Configured IP Addresses:${NC}"
-    echo "----------------------------------------"
-
-    # Get unique IPs across all ports (keep CIDR notation for 0.0.0.0/0, strip /32 for others)
-    local unique_ips=$(echo "$rules" | jq -r '.[].IpRanges[].CidrIp' 2>/dev/null | sed 's|^\([^/]*\)/32$|\1|' | sort -u)
-
-    if [ -z "$unique_ips" ]; then
-        echo "No IP addresses configured"
-        return
-    fi
-
-    local index=1
-    declare -gA IP_INDEX_MAP
-    declare -ga IP_ARRAY
-
-    while IFS= read -r ip; do
-        [ -z "$ip" ] && continue
-        IP_ARRAY[$index]="$ip"
-        IP_INDEX_MAP["$ip"]=$index
-
-        # Check ALL ports this IP can access (not just PORTS array)
-        local accessible_ports=""
-        if [ "$ip" = "0.0.0.0/0" ]; then
-            # Handle 0.0.0.0/0 specially
-            accessible_ports=$(echo "$rules" | jq -r '.[] | select(.IpRanges[].CidrIp == "0.0.0.0/0") | .FromPort' 2>/dev/null | sort -n | tr '\n' ' ')
-        else
-            # Regular IP
-            accessible_ports=$(echo "$rules" | jq -r --arg ip "${ip}/32" '.[] | select(.IpRanges[].CidrIp == $ip) | .FromPort' 2>/dev/null | sort -n | tr '\n' ' ')
-        fi
-
-        # Get description if available from .env
-        local description=""
-        if grep -q "$ip" "$ENV_FILE" 2>/dev/null; then
-            description=$(grep -A1 "AUTHORIZED_IPS_LIST" "$ENV_FILE" | grep "DESCRIPTIONS" | sed "s/.*=\"//" | sed "s/\"$//" | awk -v ip="$ip" '{
-                split($0, descs, " ");
-                split("'"$(grep "AUTHORIZED_IPS_LIST" "$ENV_FILE" | sed "s/.*=\"//" | sed "s/\"$//")"'", ips, " ");
-                for(i in ips) if(ips[i] == ip) print descs[i];
-            }')
-        fi
-
-        printf "  ${YELLOW}%2d.${NC} %-18s ${CYAN}Ports:${NC} %-30s %s\n" \
-            "$index" "$ip" "$accessible_ports" "${description:+(${description})}"
-
-        ((index++))
-    done <<< "$unique_ips"
-
-    echo ""
-}
-
 # Function to clean up obsolete ports (ports in AWS but not in PORTS array)
 cleanup_obsolete_ports() {
     echo -e "\n${CYAN}🧹 Checking for obsolete ports...${NC}"
@@ -351,31 +417,34 @@ cleanup_obsolete_ports() {
     # Remove all rules for obsolete ports
     echo -e "\n${CYAN}Removing obsolete ports...${NC}"
     for port in "${obsolete_ports[@]}"; do
-        echo -n "  Removing all rules for port $port..."
+        echo "  Removing all rules for port $port..."
 
-        # Get all CIDRs for this port
-        local cidrs=$(aws ec2 describe-security-groups \
+        # Get the full IpPermission object for this port
+        local ip_permission=$(aws ec2 describe-security-groups \
             --region "$AWS_REGION" \
             --group-ids "$TARGET_SG" \
-            --output json 2>/dev/null | jq -r --arg port "$port" '
+            --output json 2>/dev/null | jq --arg port "$port" '
             .SecurityGroups[0].IpPermissions[] |
-            select(.FromPort == ($port | tonumber)) |
-            .IpRanges[].CidrIp
+            select(.FromPort == ($port | tonumber))
             ')
 
-        # Remove each CIDR
-        local removed=0
-        while IFS= read -r cidr; do
-            [ -z "$cidr" ] && continue
-            aws ec2 revoke-security-group-ingress \
-                --region "$AWS_REGION" \
-                --group-id "$TARGET_SG" \
-                --protocol tcp \
-                --port "$port" \
-                --cidr "$cidr" >/dev/null 2>&1 && ((removed++))
-        done <<< "$cidrs"
+        if [ -z "$ip_permission" ] || [ "$ip_permission" == "null" ]; then
+            echo "    (no rules found for this port)"
+            continue
+        fi
 
-        echo -e " ${GREEN}✓${NC} (removed $removed rule(s))"
+        # Revoke ALL rules for this port in one API call
+        aws ec2 revoke-security-group-ingress \
+            --region "$AWS_REGION" \
+            --group-id "$TARGET_SG" \
+            --ip-permissions "[$ip_permission]" >/dev/null 2>&1
+
+        local removed=$?
+        if [ $removed -eq 0 ]; then
+            echo -e "    ${GREEN}✓ Removed${NC}"
+        else
+            echo -e "    ${RED}✗ Failed${NC}"
+        fi
     done
 }
 
@@ -653,11 +722,20 @@ configure_security_group() {
     # Load port configuration for this target
     get_port_config "$target"
 
+    # Get instance IP for display
+    local instance_ip=""
+    if [ "$target" == "gpu" ]; then
+        instance_ip="${GPU_INSTANCE_IP:-<gpu-ip>}"
+    elif [ "$target" == "buildbox" ]; then
+        instance_ip="${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}"
+    fi
+
     echo ""
     echo -e "${MAGENTA}════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}Configuring: ${SG_NAME}${NC}"
+    echo -e "${BLUE}Configuring: ${SG_NAME} (${instance_ip})${NC}"
     echo -e "${MAGENTA}════════════════════════════════════════════════════════════════${NC}"
-    echo "  • Security Group: ${TARGET_SG}"
+    echo -e "  • ${BLUE}Instance IP:${NC} ${instance_ip}"
+    echo -e "  • ${BLUE}Security Group:${NC} ${TARGET_SG}"
     echo "  • AWS Region: $AWS_REGION"
     echo "  • Ports: ${PORTS[*]}"
     if [ ${#PUBLIC_PORTS[@]} -gt 0 ]; then
@@ -668,7 +746,7 @@ configure_security_group() {
     display_port_info
 
     # Step 1: List current rules
-    list_current_rules
+    list_current_rules "$TARGET_SG" "$SG_NAME"
 
     # Step 1.5: Clean up obsolete ports (ports not in current config)
     cleanup_obsolete_ports
@@ -692,7 +770,8 @@ configure_security_group() {
     configure_public_ports "$collected_ips" "$collected_descriptions"
 
     # Step 5: Final verification
-    echo -e "\n${BLUE}🔍 ${SG_NAME} Final Configuration${NC}"
+    echo -e "\n${BLUE}🔍 ${SG_NAME} (${instance_ip}) Final Configuration${NC}"
+    echo -e "${BLUE}Security Group: ${TARGET_SG}${NC}"
     echo "================================================================"
 
     # Get all rules and display them properly
@@ -733,7 +812,10 @@ configure_security_group() {
     echo "================================================================"
 }
 
-# Main execution - Collect IPs once
+# Main execution - Show current rules and ask about deletion
+show_and_ask_delete
+
+# Collect IPs once
 echo ""
 echo -e "${CYAN}📋 IP Address Collection (applies to all security groups)${NC}"
 echo "================================================================"
@@ -836,13 +918,20 @@ echo -e "${GREEN}✅ ALL SECURITY GROUPS CONFIGURED SUCCESSFULLY!${NC}"
 echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
 echo ""
 echo -e "${CYAN}Summary:${NC}"
-echo "  • Configured ${#SG_TARGETS[@]} security group(s)"
+echo "  • Configured ${#SG_TARGETS[@]} security group(s):"
+for target in "${SG_TARGETS[@]}"; do
+    if [ "$target" == "gpu" ]; then
+        echo -e "    - ${BLUE}GPU Instance${NC} (${GPU_INSTANCE_IP:-<gpu-ip>}) - ${SECURITY_GROUP_ID}"
+    elif [ "$target" == "buildbox" ]; then
+        echo -e "    - ${BLUE}Build Box${NC} (${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}) - ${BUILDBOX_SECURITY_GROUP}"
+    fi
+done
 if [ -n "$ALL_IPS" ]; then
     echo "  • Added $(echo "$ALL_IPS" | wc -w) authorized IP(s) for SSH/admin access"
 fi
 for target in "${SG_TARGETS[@]}"; do
     if [ "$target" == "buildbox" ]; then
-        echo "  • Build Box: Ports 8443, 8444 open to public (0.0.0.0/0)"
+        echo -e "  • ${BLUE}Build Box${NC}: Ports ${APP_PORT:-8443}, ${DEMO_PORT:-8444} configured for web access"
     fi
 done
 echo ""
@@ -855,7 +944,7 @@ fi
 echo ""
 echo -e "${CYAN}🎯 Next Steps:${NC}"
 if [[ " ${SG_TARGETS[@]} " =~ " buildbox " ]]; then
-    echo "  • Access demo: https://${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}:8444/demo.html"
+    echo "  • Access demo: https://${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}:${DEMO_PORT:-8444}/demo.html"
 fi
 if [[ " ${SG_TARGETS[@]} " =~ " gpu " ]]; then
     echo "  • Deploy model: ./scripts/110-deploy-conformer-streaming.sh"
@@ -863,313 +952,117 @@ if [[ " ${SG_TARGETS[@]} " =~ " gpu " ]]; then
 fi
 echo "================================================================"
 
-# ASCII Architecture Diagram
+# Function to display actual AWS rules in port-grouped format
+display_final_rules() {
+    local sg_id=$1
+    local sg_name=$2
+    local instance_ip=$3
+
+    echo ""
+    echo -e "${BLUE}${instance_ip}  ${sg_name}${NC}"
+    echo -e "${BLUE}Security Group: ${sg_id}${NC}"
+
+    # Get all rules from AWS
+    local rules=$(aws ec2 describe-security-groups \
+        --region "$AWS_REGION" \
+        --group-ids "$sg_id" \
+        --query 'SecurityGroups[0].IpPermissions[]' \
+        --output json 2>/dev/null)
+
+    if [ -z "$rules" ] || [ "$rules" == "[]" ]; then
+        echo "   (no rules configured)"
+        return
+    fi
+
+    # Parse and display rules grouped by port
+    printf "   %-8s %-21s %-20s %-30s\n" "PORT" "SOURCE" "Label" "Notes"
+    echo "   ─────────────────────────────────────────────────────────────────────────────"
+
+    # Extract port/source pairs and match with descriptions
+    echo "$rules" | jq -r '.[] | {port: .FromPort, cidrs: .IpRanges[].CidrIp} | "\(.port) \(.cidrs)"' | sort -n | while read port cidr; do
+        # Try to find label from ALL_DESCRIPTIONS
+        local label=""
+        local clean_ip=$(echo "$cidr" | sed 's|/32$||')
+
+        if [ -n "$ALL_IPS" ]; then
+            IFS=' ' read -ra ip_list <<< "$ALL_IPS"
+            IFS=' ' read -ra desc_list <<< "$ALL_DESCRIPTIONS"
+            for i in "${!ip_list[@]}"; do
+                if [ "${ip_list[$i]}" == "$clean_ip" ]; then
+                    label="(${desc_list[$i]})"
+                    break
+                fi
+            done
+        fi
+
+        printf "   %-8s %-21s %-20s\n" "$port" "$cidr" "$label"
+    done
+    echo ""
+}
+
+# ASCII Architecture Diagram & Final Rules
 echo ""
 echo ""
-echo -e "${CYAN}📐 Architecture Diagram & Security Rules${NC}"
+echo -e "${CYAN}📐 Final Security Group Configuration${NC}"
 echo "════════════════════════════════════════════════════════════════════════════════"
-echo ""
-if [[ " ${SG_TARGETS[@]} " =~ " gpu " ]] && [[ " ${SG_TARGETS[@]} " =~ " buildbox " ]]; then
-    # Both configured - show full architecture
 
-    # Get actual configured IPs for display
-    local admin_ips_display=""
-    if [ -n "$ALL_IPS" ]; then
-        IFS=' ' read -ra ip_list <<< "$ALL_IPS"
-        IFS=' ' read -ra desc_list <<< "$ALL_DESCRIPTIONS"
-
-        for i in "${!ip_list[@]}"; do
-            admin_ips_display="${admin_ips_display}    • ${ip_list[$i]} (${desc_list[$i]:-Unknown})\n"
-        done
-    fi
-
-    # Get instance IPs
-    local buildbox_ip="${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}"
-    local gpu_ip="${GPU_INSTANCE_IP:-<gpu-ip>}"
-
-    echo "  ┌────────────────────────────────────┐          ┌────────────────────────────────────┐"
-    echo "  │         BUILD BOX                  │          │         GPU WORKER                 │"
-    echo "  │      (Control Plane)               │          │       (NVIDIA Riva)                │"
-    echo "  │                                    │          │                                    │"
-    echo "  │  IP: ${buildbox_ip}                │          │  IP: ${gpu_ip}                │"
-    echo "  │  SG: ${BUILDBOX_SECURITY_GROUP:-<sg-buildbox>}          │          │  SG: ${SECURITY_GROUP_ID:-<sg-gpu>}                │"
-    echo "  │                                    │          │                                    │"
-    echo "  │  Ports Allowed:                    │          │  Ports Allowed:                    │"
-    echo "  │  ✓ 22   SSH (Admin IPs)            │          │  ✓ 22    SSH (Admin IPs)           │"
-    echo "  │  ✓ 8443 WSS (Public/Restricted)    │          │  ✓ 50051 gRPC (Admin IPs)          │"
-    echo "  │  ✓ 8444 HTTPS (Public/Restricted)  │          │  ✓ 8000  Health (Admin IPs)        │"
-    echo "  │                                    │          │                                    │"
-    echo "  │  Services:                         │──────────│  Services:                         │"
-    echo "  │  • WebSocket Bridge                │  gRPC    │  • NVIDIA Riva 2.19                │"
-    echo "  │  • HTTPS Demo Server               │  :50051  │  • Conformer-CTC-XL Model          │"
-    echo "  │                                    │─────────>│  • Speech Recognition Engine       │"
-    echo "  └────────────────┬───────────────────┘          └────────────────────────────────────┘"
-    echo "                   │"
-    echo "                   │ :8443 (WebSocket/WSS)"
-    echo "                   │ :8444 (HTTPS Demo)"
-    echo "                   ▼"
-    echo "  ┌────────────────────────────────────┐"
-    echo "  │       BROWSER CLIENTS              │"
-    echo "  │       (Internet Access)            │"
-    echo "  │                                    │"
-    if [ -n "$admin_ips_display" ]; then
-        echo "  │  Authorized IPs for Ports 8443/8444:│"
-        echo -e "$admin_ips_display  │"
-    else
-        echo "  │  Access: 0.0.0.0/0 (Public)        │"
-    fi
-    echo "  │                                    │"
-    echo "  │  Devices: Phone, Laptop, Tablet    │"
-    echo "  └────────────────────────────────────┘"
-    echo ""
-    echo ""
-    echo -e "${CYAN}🔒 Security Group Rules (AWS Format)${NC}"
-    echo "════════════════════════════════════════════════════════════════════════════════"
-    echo ""
-    echo -e "${GREEN}┌────────────────────────────────────────────────────────────────┐${NC}"
-    echo -e "${GREEN}│  DESTINATION: BUILD BOX                                        │${NC}"
-    echo -e "${GREEN}│  Instance IP: ${buildbox_ip}                            │${NC}"
-    echo -e "${GREEN}│  Security Group: ${BUILDBOX_SECURITY_GROUP:-<sg-id>}                                  │${NC}"
-    echo -e "${GREEN}│                                                                │${NC}"
-    echo -e "${GREEN}│  Rules define which SOURCE IPs can connect to THIS instance   │${NC}"
-    echo -e "${GREEN}└────────────────────────────────────────────────────────────────┘${NC}"
-    echo ""
-    echo "Inbound Rules (Who can connect TO this build box):"
-    echo "┌──────────┬──────────┬────────────┬──────────────────────┬─────────────────────┐"
-    echo "│ Type     │ Protocol │ Port Range │ Source               │ Description         │"
-    echo "├──────────┼──────────┼────────────┼──────────────────────┼─────────────────────┤"
-    if [ -n "$ALL_IPS" ]; then
-        IFS=' ' read -ra ip_list <<< "$ALL_IPS"
-        IFS=' ' read -ra desc_list <<< "$ALL_DESCRIPTIONS"
-        for i in "${!ip_list[@]}"; do
-            echo "│ SSH      │ TCP      │ 22         │ ${ip_list[$i]}/32      │ ${desc_list[$i]:-Admin}            │"
-        done
-    else
-        echo "│ SSH      │ TCP      │ 22         │ (not configured)     │ Admin access        │"
-    fi
-    echo "├──────────┼──────────┼────────────┼──────────────────────┼─────────────────────┤"
-    echo "│ Custom   │ TCP      │ 8443       │ 0.0.0.0/0 or IPs     │ WebSocket (WSS)     │"
-    if [ -n "$ALL_IPS" ]; then
-        for i in "${!ip_list[@]}"; do
-            echo "│          │          │            │ ${ip_list[$i]}/32      │ ${desc_list[$i]:-Web Client}        │"
-        done
-    fi
-    echo "├──────────┼──────────┼────────────┼──────────────────────┼─────────────────────┤"
-    echo "│ HTTPS    │ TCP      │ 8444       │ 0.0.0.0/0 or IPs     │ Demo Server         │"
-    if [ -n "$ALL_IPS" ]; then
-        for i in "${!ip_list[@]}"; do
-            echo "│          │          │            │ ${ip_list[$i]}/32      │ ${desc_list[$i]:-Web Client}        │"
-        done
-    fi
-    echo "└──────────┴──────────┴────────────┴──────────────────────┴─────────────────────┘"
-    echo ""
-    echo "────────────────────────────────────────────────────────────────────────────────"
-    echo ""
-    echo -e "${GREEN}┌────────────────────────────────────────────────────────────────┐${NC}"
-    echo -e "${GREEN}│  DESTINATION: GPU WORKER                                       │${NC}"
-    echo -e "${GREEN}│  Instance IP: ${gpu_ip}                            │${NC}"
-    echo -e "${GREEN}│  Security Group: ${SECURITY_GROUP_ID:-<sg-id>}                                  │${NC}"
-    echo -e "${GREEN}│                                                                │${NC}"
-    echo -e "${GREEN}│  Rules define which SOURCE IPs can connect to THIS instance   │${NC}"
-    echo -e "${GREEN}└────────────────────────────────────────────────────────────────┘${NC}"
-    echo ""
-    echo "Inbound Rules (Who can connect TO this GPU worker):"
-    echo "┌──────────┬──────────┬────────────┬──────────────────────┬─────────────────────┐"
-    echo "│ Type     │ Protocol │ Port Range │ Source               │ Description         │"
-    echo "├──────────┼──────────┼────────────┼──────────────────────┼─────────────────────┤"
-    if [ -n "$ALL_IPS" ]; then
-        for i in "${!ip_list[@]}"; do
-            echo "│ SSH      │ TCP      │ 22         │ ${ip_list[$i]}/32      │ ${desc_list[$i]:-Admin}            │"
-        done
-    else
-        echo "│ SSH      │ TCP      │ 22         │ (not configured)     │ Admin access        │"
-    fi
-    echo "├──────────┼──────────┼────────────┼──────────────────────┼─────────────────────┤"
-    if [ -n "$ALL_IPS" ]; then
-        for i in "${!ip_list[@]}"; do
-            echo "│ Custom   │ TCP      │ 50051      │ ${ip_list[$i]}/32      │ ${desc_list[$i]:-Riva gRPC}        │"
-        done
-    else
-        echo "│ Custom   │ TCP      │ 50051      │ (not configured)     │ Riva gRPC           │"
-    fi
-    echo "├──────────┼──────────┼────────────┼──────────────────────┼─────────────────────┤"
-    if [ -n "$ALL_IPS" ]; then
-        for i in "${!ip_list[@]}"; do
-            echo "│ Custom   │ TCP      │ 8000       │ ${ip_list[$i]}/32      │ ${desc_list[$i]:-Health}           │"
-        done
-    else
-        echo "│ Custom   │ TCP      │ 8000       │ (not configured)     │ Health Check        │"
-    fi
-    echo "└──────────┴──────────┴────────────┴──────────────────────┴─────────────────────┘"
-    echo ""
-    echo "════════════════════════════════════════════════════════════════════════════════"
-    echo ""
-    echo -e "${GREEN}📡 Data Flow:${NC}"
-    echo "  1. Browser (Phone/Laptop) sends audio → Build Box :8443 (WebSocket)"
-    echo "  2. Build Box forwards to → GPU Worker :50051 (gRPC)"
-    echo "  3. GPU Worker processes audio with NVIDIA Riva Conformer-CTC-XL"
-    echo "  4. GPU Worker returns transcription → Build Box"
-    echo "  5. Build Box sends results → Browser"
-
-elif [[ " ${SG_TARGETS[@]} " =~ " gpu " ]]; then
-    # GPU only
-    local admin_ips_display=""
-    if [ -n "$ALL_IPS" ]; then
-        IFS=' ' read -ra ip_list <<< "$ALL_IPS"
-        IFS=' ' read -ra desc_list <<< "$ALL_DESCRIPTIONS"
-
-        for i in "${!ip_list[@]}"; do
-            admin_ips_display="${admin_ips_display}    • ${ip_list[$i]} (${desc_list[$i]:-Unknown})\n"
-        done
-    fi
-
-    local gpu_ip="${GPU_INSTANCE_IP:-<gpu-ip>}"
-
-    echo "       ┌──────────────────────────────────────────────┐"
-    echo "       │           GPU WORKER (NVIDIA Riva)           │"
-    echo "       │                                              │"
-    echo "       │  IP: ${gpu_ip}                          │"
-    echo "       │  Security Group: ${SECURITY_GROUP_ID:-<sg-id>}            │"
-    echo "       │                                              │"
-    echo "       │  Ports Allowed:                              │"
-    echo "       │  ✓ 22    SSH (Admin IPs)                     │"
-    echo "       │  ✓ 50051 gRPC (Admin IPs)                    │"
-    echo "       │  ✓ 8000  Health (Admin IPs)                  │"
-    echo "       │                                              │"
-    echo "       │  Services:                                   │"
-    echo "       │  • NVIDIA Riva 2.19                          │"
-    echo "       │  • Conformer-CTC-XL Model                    │"
-    echo "       │  • Speech Recognition API                    │"
-    echo "       └──────────────────────────────────────────────┘"
-    echo ""
-    echo -e "${CYAN}🔒 Security Group Rules (AWS Format)${NC}"
-    echo "════════════════════════════════════════════════════════════════════════════════"
-    echo ""
-    echo -e "${GREEN}┌────────────────────────────────────────────────────────────────┐${NC}"
-    echo -e "${GREEN}│  DESTINATION: GPU WORKER                                       │${NC}"
-    echo -e "${GREEN}│  Instance IP: ${gpu_ip}                            │${NC}"
-    echo -e "${GREEN}│  Security Group: ${SECURITY_GROUP_ID:-<sg-id>}                                  │${NC}"
-    echo -e "${GREEN}│                                                                │${NC}"
-    echo -e "${GREEN}│  Rules define which SOURCE IPs can connect to THIS instance   │${NC}"
-    echo -e "${GREEN}└────────────────────────────────────────────────────────────────┘${NC}"
-    echo ""
-    echo "Inbound Rules (Who can connect TO this GPU worker):"
-    echo "┌──────────┬──────────┬────────────┬──────────────────────┬─────────────────────┐"
-    echo "│ Type     │ Protocol │ Port Range │ Source               │ Description         │"
-    echo "├──────────┼──────────┼────────────┼──────────────────────┼─────────────────────┤"
-    if [ -n "$ALL_IPS" ]; then
-        IFS=' ' read -ra ip_list <<< "$ALL_IPS"
-        IFS=' ' read -ra desc_list <<< "$ALL_DESCRIPTIONS"
-        for i in "${!ip_list[@]}"; do
-            echo "│ SSH      │ TCP      │ 22         │ ${ip_list[$i]}/32      │ ${desc_list[$i]:-Admin}            │"
-        done
-    else
-        echo "│ SSH      │ TCP      │ 22         │ (not configured)     │ Admin access        │"
-    fi
-    echo "├──────────┼──────────┼────────────┼──────────────────────┼─────────────────────┤"
-    if [ -n "$ALL_IPS" ]; then
-        for i in "${!ip_list[@]}"; do
-            echo "│ Custom   │ TCP      │ 50051      │ ${ip_list[$i]}/32      │ ${desc_list[$i]:-Riva gRPC}        │"
-        done
-    else
-        echo "│ Custom   │ TCP      │ 50051      │ (not configured)     │ Riva gRPC           │"
-    fi
-    echo "├──────────┼──────────┼────────────┼──────────────────────┼─────────────────────┤"
-    if [ -n "$ALL_IPS" ]; then
-        for i in "${!ip_list[@]}"; do
-            echo "│ Custom   │ TCP      │ 8000       │ ${ip_list[$i]}/32      │ ${desc_list[$i]:-Health}           │"
-        done
-    else
-        echo "│ Custom   │ TCP      │ 8000       │ (not configured)     │ Health Check        │"
-    fi
-    echo "└──────────┴──────────┴────────────┴──────────────────────┴─────────────────────┘"
-    echo ""
-    echo "════════════════════════════════════════════════════════════════════════════════"
-
-elif [[ " ${SG_TARGETS[@]} " =~ " buildbox " ]]; then
-    # Build box only
-    local admin_ips_display=""
-    if [ -n "$ALL_IPS" ]; then
-        IFS=' ' read -ra ip_list <<< "$ALL_IPS"
-        IFS=' ' read -ra desc_list <<< "$ALL_DESCRIPTIONS"
-
-        for i in "${!ip_list[@]}"; do
-            admin_ips_display="${admin_ips_display}    • ${ip_list[$i]} (${desc_list[$i]:-Unknown})\n"
-        done
-    fi
-
-    local buildbox_ip="${BUILDBOX_PUBLIC_IP:-<buildbox-ip>}"
-
-    echo "       ┌──────────────────────────────────────────────┐"
-    echo "       │      BUILD BOX (Control Plane)               │"
-    echo "       │                                              │"
-    echo "       │  IP: ${buildbox_ip}                     │"
-    echo "       │  Security Group: ${BUILDBOX_SECURITY_GROUP:-<sg-id>}            │"
-    echo "       │                                              │"
-    echo "       │  Ports Allowed:                              │"
-    echo "       │  ✓ 22   SSH (Admin IPs)                      │"
-    echo "       │  ✓ 8443 WSS (Public/Restricted)              │"
-    echo "       │  ✓ 8444 HTTPS (Public/Restricted)            │"
-    echo "       │                                              │"
-    echo "       │  Services:                                   │"
-    echo "       │  • WebSocket Bridge                          │"
-    echo "       │  • HTTPS Demo Server                         │"
-    echo "       └──────────────────┬───────────────────────────┘"
-    echo "                          │"
-    echo "                          │ :8443 (WSS)"
-    echo "                          │ :8444 (HTTPS)"
-    echo "                          ▼"
-    echo "       ┌──────────────────────────────────────────────┐"
-    echo "       │         BROWSER CLIENTS                      │"
-    if [ -n "$admin_ips_display" ]; then
-        echo "       │  Authorized IPs:                             │"
-        echo -e "$admin_ips_display       │"
-    else
-        echo "       │  Access: 0.0.0.0/0 (Public)                  │"
-    fi
-    echo "       └──────────────────────────────────────────────┘"
-    echo ""
-    echo -e "${CYAN}🔒 Security Group Rules (AWS Format)${NC}"
-    echo "════════════════════════════════════════════════════════════════════════════════"
-    echo ""
-    echo -e "${GREEN}┌────────────────────────────────────────────────────────────────┐${NC}"
-    echo -e "${GREEN}│  DESTINATION: BUILD BOX                                        │${NC}"
-    echo -e "${GREEN}│  Instance IP: ${buildbox_ip}                            │${NC}"
-    echo -e "${GREEN}│  Security Group: ${BUILDBOX_SECURITY_GROUP:-<sg-id>}                                  │${NC}"
-    echo -e "${GREEN}│                                                                │${NC}"
-    echo -e "${GREEN}│  Rules define which SOURCE IPs can connect to THIS instance   │${NC}"
-    echo -e "${GREEN}└────────────────────────────────────────────────────────────────┘${NC}"
-    echo ""
-    echo "Inbound Rules (Who can connect TO this build box):"
-    echo "┌──────────┬──────────┬────────────┬──────────────────────┬─────────────────────┐"
-    echo "│ Type     │ Protocol │ Port Range │ Source               │ Description         │"
-    echo "├──────────┼──────────┼────────────┼──────────────────────┼─────────────────────┤"
-    if [ -n "$ALL_IPS" ]; then
-        IFS=' ' read -ra ip_list <<< "$ALL_IPS"
-        IFS=' ' read -ra desc_list <<< "$ALL_DESCRIPTIONS"
-        for i in "${!ip_list[@]}"; do
-            echo "│ SSH      │ TCP      │ 22         │ ${ip_list[$i]}/32      │ ${desc_list[$i]:-Admin}            │"
-        done
-    else
-        echo "│ SSH      │ TCP      │ 22         │ (not configured)     │ Admin access        │"
-    fi
-    echo "├──────────┼──────────┼────────────┼──────────────────────┼─────────────────────┤"
-    echo "│ Custom   │ TCP      │ 8443       │ 0.0.0.0/0 or IPs     │ WebSocket (WSS)     │"
-    if [ -n "$ALL_IPS" ]; then
-        for i in "${!ip_list[@]}"; do
-            echo "│          │          │            │ ${ip_list[$i]}/32      │ ${desc_list[$i]:-Web Client}        │"
-        done
-    fi
-    echo "├──────────┼──────────┼────────────┼──────────────────────┼─────────────────────┤"
-    echo "│ HTTPS    │ TCP      │ 8444       │ 0.0.0.0/0 or IPs     │ Demo Server         │"
-    if [ -n "$ALL_IPS" ]; then
-        for i in "${!ip_list[@]}"; do
-            echo "│          │          │            │ ${ip_list[$i]}/32      │ ${desc_list[$i]:-Web Client}        │"
-        done
-    fi
-    echo "└──────────┴──────────┴────────────┴──────────────────────┴─────────────────────┘"
-    echo ""
-    echo "════════════════════════════════════════════════════════════════════════════════"
+# Display actual AWS rules for each configured security group
+if [[ " ${SG_TARGETS[@]} " =~ " gpu " ]]; then
+    display_final_rules "$SECURITY_GROUP_ID" "GPU Instance" "${GPU_INSTANCE_IP:-3.144.194.135}"
 fi
+
+if [[ " ${SG_TARGETS[@]} " =~ " buildbox " ]]; then
+    display_final_rules "$BUILDBOX_SECURITY_GROUP" "BuildBox" "${BUILDBOX_PUBLIC_IP:-3.16.124.227}"
+fi
+
+# Clients section
+echo ""
+echo -e "${CYAN}Clients${NC}"
+echo "─────────────────────────────────────────────────────────────────────────────"
+if [ -n "$ALL_IPS" ]; then
+    IFS=' ' read -ra ip_list <<< "$ALL_IPS"
+    IFS=' ' read -ra desc_list <<< "$ALL_DESCRIPTIONS"
+    for i in "${!ip_list[@]}"; do
+        printf "   %-18s %s\n" "${ip_list[$i]}" "(${desc_list[$i]})"
+    done
+else
+    echo "   (no clients configured)"
+fi
+
+echo ""
+echo ""
+
+# ASCII Diagram
+echo -e "${CYAN}Architecture${NC}"
+echo "─────────────────────────────────────────────────────────────────────────────"
+echo ""
+
+if [[ " ${SG_TARGETS[@]} " =~ " gpu " ]] && [[ " ${SG_TARGETS[@]} " =~ " buildbox " ]]; then
+    buildbox_ip="${BUILDBOX_PUBLIC_IP:-3.16.124.227}"
+    gpu_ip="${GPU_INSTANCE_IP:-3.144.194.135}"
+
+    echo "  ┌─────────────────┐                    ┌─────────────────┐"
+    echo "  │ Build Box       │ -----------------> │ GPU Worker      │"
+    echo "  │ ${buildbox_ip} │    :50051 gRPC     │ ${gpu_ip} │"
+    echo "  └─────────────────┘                    └─────────────────┘"
+    echo "          ^"
+    echo "          │ :8443 WSS"
+    echo "          │ :8444 HTTPS"
+    echo "          │"
+    echo "  ┌─────────────────┐"
+    echo "  │ Client(s)       │"
+    if [ -n "$ALL_IPS" ]; then
+        IFS=' ' read -ra ip_list <<< "$ALL_IPS"
+        for i in "${!ip_list[@]}"; do
+            printf "  │ %-15s │\n" "${ip_list[$i]}"
+        done
+    fi
+    echo "  └─────────────────┘"
+
+else
+    # No security groups configured
+    echo "  (No security groups configured)"
+fi
+
 echo ""
 echo "════════════════════════════════════════════════════════════════════════════════"

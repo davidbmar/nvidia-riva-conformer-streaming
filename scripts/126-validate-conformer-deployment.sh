@@ -265,7 +265,7 @@ if [ $VALIDATION_ERRORS -eq 0 ]; then
     echo ""
     echo "Next Steps:"
     echo "  • Update WebSocket bridge to point to this RIVA instance"
-    echo "  • Test streaming: https://$(curl -s ifconfig.me 2>/dev/null || echo '<buildbox-ip>'):8444/demo.html"
+    echo "  • Test streaming: https://$(curl -s ifconfig.me 2>/dev/null || echo '<buildbox-ip>'):${DEMO_PORT:-8444}/demo.html"
     echo ""
     exit 0
 else

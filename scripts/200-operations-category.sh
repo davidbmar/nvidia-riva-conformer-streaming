@@ -62,6 +62,6 @@ COST SAVINGS:
 
 ═══════════════════════════════════════════════════════════════════════════
 
-After startup completes, test at: https://3.16.124.227:8444/demo.html
+After startup completes, test at: https://${BUILDBOX_PUBLIC_IP:-3.16.124.227}:${DEMO_PORT:-8444}/demo.html
 
 EOF
