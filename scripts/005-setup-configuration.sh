@@ -1400,11 +1400,20 @@ RIVA_ENABLE_AUTOMATIC_PUNCTUATION=true
 RIVA_ENABLE_WORD_TIME_OFFSETS=true
 
 # ============================================================================
-# S3 Model Paths (for Conformer-CTC Streaming)
+# S3 Model Paths
 # ============================================================================
+# Shared configuration
+S3_MODEL_BUCKET=dbm-cf-2-web
+RIVA_SERVER_PATH=s3://dbm-cf-2-web/bintarball/riva-containers/riva-speech-2.19.0.tar.gz
+
+# Conformer-CTC (Scripts 100-110, Deploy: 125)
 S3_CONFORMER_RMIR=${CONFIG_VALUES[S3_CONFORMER_RMIR]}
 S3_CONFORMER_SOURCE=${CONFIG_VALUES[S3_CONFORMER_SOURCE]}
 S3_CONFORMER_TRITON_CACHE=${CONFIG_VALUES[S3_CONFORMER_TRITON_CACHE]}
+
+# Parakeet RNNT (Scripts 116-118, Deploy: 135)
+S3_PARAKEET_SOURCE=s3://dbm-cf-2-web/bintarball/riva-models/parakeet/parakeet-rnnt-riva-1-1b-en-us-deployable_v8.1.tar.gz
+S3_PARAKEET_TRITON_CACHE=s3://dbm-cf-2-web/bintarball/riva-repository/parakeet-rnnt-1.1b/v8.1/
 
 # ============================================================================
 # NVIDIA NGC
