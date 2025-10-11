@@ -217,6 +217,10 @@ echo ""
 # Login to NGC (NGC_API_KEY and RIVA_VERSION will be passed as env vars)
 echo "$NGC_API_KEY" | docker login nvcr.io --username '$oauthtoken' --password-stdin >/dev/null 2>&1
 
+# Clear output directory first
+echo "Clearing output directory..."
+rm -rf output/*
+
 # Run riva-build
 echo "Running docker riva-build command..."
 docker run --rm --gpus all \
@@ -229,7 +233,8 @@ docker run --rm --gpus all \
         "/workspace/${SOURCE_FILE}" \
         --name="${MODEL_BASENAME}" \
         --language_code=en-US \
-        --decoder_type=greedy
+        --decoder_type=greedy \
+        --force
 
 BUILD_EXIT_CODE=$?
 echo "riva-build completed with exit code: $BUILD_EXIT_CODE at $(date)"
