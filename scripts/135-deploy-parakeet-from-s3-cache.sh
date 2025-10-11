@@ -284,18 +284,17 @@ echo ""
 # ============================================================================
 echo "Step 5/6: Starting RIVA server..."
 
-START_CMD="docker run -d --name riva-server --gpus all \\
-  --restart unless-stopped \\
-  -p ${RIVA_PORT}:${RIVA_PORT} \\
-  -p 8000:8000 \\
-  -v ${MODEL_REPO_DIR}:/opt/riva_models \\
-  -e CUDA_VISIBLE_DEVICES=0 \\
-  --shm-size=8g \\
+# Stop existing container and start new one
+START_CMD="docker stop riva-server 2>/dev/null || true && \\
+docker rm riva-server 2>/dev/null || true && \\
+docker run -d --gpus all --name riva-server \\
+  -p ${RIVA_PORT}:50051 \\
+  -p ${RIVA_HTTP_PORT}:8000 \\
+  -p 8001:8001 \\
+  -p 8002:8002 \\
+  -v ${MODEL_REPO_DIR}:/data/models \\
   nvcr.io/nvidia/riva/riva-speech:${RIVA_VERSION} \\
-  bash -c 'export LD_LIBRARY_PATH=/opt/tritonserver/lib:\$LD_LIBRARY_PATH && \\
-  /opt/riva/bin/start-riva --riva-uri=0.0.0.0:${RIVA_PORT} \\
-  --nlp_service=false --nmt_service=false --tts_service=false \\
-  --asr_service=true --model_repo=/opt/riva_models'"
+  bash -c 'tritonserver --model-repository=/data/models --cuda-memory-pool-byte-size=0:8000000000 --log-info=true --exit-on-error=false & sleep 20 && /opt/riva/bin/riva_server --asr_service=true --nlp_service=false --tts_service=false & wait'"
 
 echo "Starting container..."
 ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" "$START_CMD"
