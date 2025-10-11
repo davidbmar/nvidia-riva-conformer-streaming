@@ -189,8 +189,9 @@ echo ""
 
 BUILD_START=$(date +%s)
 
-ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
-    "NGC_API_KEY='${NGC_API_KEY}' RIVA_VERSION='${RIVA_VERSION}'" << 'BUILD_SCRIPT'
+# Create build script on GPU
+ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" "cat > /tmp/run-riva-build.sh" << 'BUILD_SCRIPT_CONTENT'
+#!/bin/bash
 set -euo pipefail
 
 cd /tmp/riva-build
@@ -198,7 +199,6 @@ cd /tmp/riva-build
 # Find source .riva file
 SOURCE_FILE=$(find input -name "*deployable*.riva" -type f | head -1)
 if [ -z "$SOURCE_FILE" ]; then
-    # Try any .riva file
     SOURCE_FILE=$(find input -name "*.riva" -type f | head -1)
 fi
 
@@ -207,7 +207,6 @@ if [ -z "$SOURCE_FILE" ]; then
     exit 1
 fi
 
-# Extract model name for output
 MODEL_BASENAME=$(basename "$SOURCE_FILE" .riva)
 
 echo "Source model: $SOURCE_FILE"
@@ -215,10 +214,11 @@ echo "Output name: ${MODEL_BASENAME}"
 echo "Starting riva-build at $(date)..."
 echo ""
 
-# Login to NGC
+# Login to NGC (NGC_API_KEY and RIVA_VERSION will be passed as env vars)
 echo "$NGC_API_KEY" | docker login nvcr.io --username '$oauthtoken' --password-stdin >/dev/null 2>&1
 
-# Run riva-build with Parakeet RNNT parameters
+# Run riva-build
+echo "Running docker riva-build command..."
 docker run --rm --gpus all \
     -v /tmp/riva-build:/workspace \
     -e NGC_API_KEY="${NGC_API_KEY}" \
@@ -238,11 +238,15 @@ if [ $BUILD_EXIT_CODE -eq 0 ] && [ -f "output/${MODEL_BASENAME}.riva" ]; then
     echo "✅ riva-build completed successfully"
     echo "Output file: output/${MODEL_BASENAME}.riva"
     echo "Output size: $(du -h "output/${MODEL_BASENAME}.riva" | cut -f1)"
+    exit 0
 else
     echo "❌ riva-build failed"
     exit 1
 fi
-BUILD_SCRIPT
+BUILD_SCRIPT_CONTENT
+
+# Make script executable and run it
+ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" "chmod +x /tmp/run-riva-build.sh && NGC_API_KEY='${NGC_API_KEY}' RIVA_VERSION='${RIVA_VERSION}' /tmp/run-riva-build.sh"
 
 BUILD_EXIT=$?
 BUILD_END=$(date +%s)
@@ -264,8 +268,9 @@ echo ""
 
 DEPLOY_START=$(date +%s)
 
-ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
-    "NGC_API_KEY='${NGC_API_KEY}' RIVA_VERSION='${RIVA_VERSION}' MODEL_REPO_DIR='${MODEL_REPO_DIR}'" << 'DEPLOY_SCRIPT'
+# Create deploy script on GPU
+ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" "cat > /tmp/run-riva-deploy.sh" << 'DEPLOY_SCRIPT_CONTENT'
+#!/bin/bash
 set -euo pipefail
 
 cd /tmp/riva-build
@@ -287,6 +292,7 @@ rm -rf ${MODEL_REPO_DIR:?}/*
 mkdir -p "$MODEL_REPO_DIR"
 
 # Run riva-deploy
+echo "Running docker riva-deploy command..."
 docker run --rm --gpus all \
     -v /tmp/riva-build:/workspace \
     -v ${MODEL_REPO_DIR}:${MODEL_REPO_DIR} \
@@ -307,11 +313,15 @@ if [ $DEPLOY_EXIT_CODE -eq 0 ]; then
 
     MODEL_COUNT=$(find "$MODEL_REPO_DIR" -maxdepth 1 -type d ! -path "$MODEL_REPO_DIR" | wc -l)
     echo "✅ Created $MODEL_COUNT model directories"
+    exit 0
 else
     echo "❌ riva-deploy failed"
     exit 1
 fi
-DEPLOY_SCRIPT
+DEPLOY_SCRIPT_CONTENT
+
+# Make script executable and run it
+ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" "chmod +x /tmp/run-riva-deploy.sh && NGC_API_KEY='${NGC_API_KEY}' RIVA_VERSION='${RIVA_VERSION}' MODEL_REPO_DIR='${MODEL_REPO_DIR}' /tmp/run-riva-deploy.sh"
 
 DEPLOY_EXIT=$?
 DEPLOY_END=$(date +%s)
