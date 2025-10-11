@@ -91,11 +91,15 @@ echo "  • Temp Directory: $TEMP_DIR"
 echo ""
 
 # ============================================================================
-# Step 1: Download models from GPU to build box
+# Step 1: Fix permissions and download models from GPU to build box
 # ============================================================================
-echo "Step 1/4: Downloading Triton models from GPU..."
+echo "Step 1/4: Fixing permissions and downloading Triton models from GPU..."
 
 DOWNLOAD_START=$(date +%s)
+
+# Fix permissions on GPU (Docker creates files as root)
+echo "Changing ownership to ubuntu:ubuntu..."
+ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" "sudo chown -R ubuntu:ubuntu ${MODEL_REPO_DIR}"
 
 mkdir -p "$TEMP_DIR"
 
