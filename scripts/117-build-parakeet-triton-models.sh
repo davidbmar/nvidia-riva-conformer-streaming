@@ -121,45 +121,61 @@ echo "✅ GPU worker prepared"
 echo ""
 
 # ============================================================================
-# Step 2: Download and extract source model to GPU
+# Step 2: Download source model on build box and transfer to GPU
 # ============================================================================
-echo "Step 2/5: Downloading and extracting source model to GPU..."
+echo "Step 2/5: Downloading source model and transferring to GPU..."
 
-ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" \
-    "AWS_REGION='${AWS_REGION}' S3_PARAKEET_SOURCE='${S3_PARAKEET_SOURCE}'" << 'DOWNLOAD_SCRIPT'
-set -euo pipefail
+# Download on build box (has S3 access)
+LOCAL_TEMP="/tmp/parakeet-source-$$"
+mkdir -p "$LOCAL_TEMP"
 
-cd /tmp/riva-build/input
-
-# Download source model
-echo "Downloading from S3: $S3_PARAKEET_SOURCE"
-if aws s3 cp "$S3_PARAKEET_SOURCE" . --region "$AWS_REGION"; then
-    ARCHIVE_FILE=$(ls -1 *.tar.gz 2>/dev/null | head -1)
-    if [ -n "$ARCHIVE_FILE" ]; then
-        echo "✅ Downloaded: $ARCHIVE_FILE ($(du -h "$ARCHIVE_FILE" | cut -f1))"
-
-        # Extract the archive
-        echo "Extracting archive..."
-        tar -xzf "$ARCHIVE_FILE"
-
-        # Find .riva files
-        RIVA_FILES=$(find . -name "*.riva" -type f | wc -l)
-        echo "✅ Extracted $RIVA_FILES .riva file(s)"
-        find . -name "*.riva" -type f -exec ls -lh {} \;
-    else
-        echo "❌ No .tar.gz file found after download"
-        exit 1
-    fi
+echo "Downloading from S3 to build box: $S3_PARAKEET_SOURCE"
+if aws s3 cp "$S3_PARAKEET_SOURCE" "$LOCAL_TEMP/" --region "$AWS_REGION"; then
+    ARCHIVE_FILE=$(ls -1 "$LOCAL_TEMP"/*.tar.gz 2>/dev/null | head -1)
+    ARCHIVE_SIZE=$(du -h "$ARCHIVE_FILE" | cut -f1)
+    echo "✅ Downloaded: $(basename "$ARCHIVE_FILE") ($ARCHIVE_SIZE)"
 else
-    echo "❌ Download failed"
+    echo "❌ Download from S3 failed"
+    rm -rf "$LOCAL_TEMP"
     exit 1
 fi
-DOWNLOAD_SCRIPT
+
+# Transfer to GPU
+echo "Transferring $(basename "$ARCHIVE_FILE") to GPU..."
+if scp $SSH_OPTS "$ARCHIVE_FILE" "${REMOTE_USER}@${GPU_INSTANCE_IP}:/tmp/riva-build/input/"; then
+    echo "✅ Transfer completed"
+else
+    echo "❌ Transfer to GPU failed"
+    rm -rf "$LOCAL_TEMP"
+    exit 1
+fi
+
+# Extract on GPU
+echo "Extracting on GPU..."
+ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" << 'EXTRACT_SCRIPT'
+set -euo pipefail
+cd /tmp/riva-build/input
+ARCHIVE_FILE=$(ls -1 *.tar.gz 2>/dev/null | head -1)
+if [ -n "$ARCHIVE_FILE" ]; then
+    echo "Extracting $ARCHIVE_FILE..."
+    tar -xzf "$ARCHIVE_FILE"
+    RIVA_FILES=$(find . -name "*.riva" -type f | wc -l)
+    echo "✅ Extracted $RIVA_FILES .riva file(s)"
+    find . -name "*.riva" -type f -exec ls -lh {} \;
+else
+    echo "❌ No .tar.gz file found"
+    exit 1
+fi
+EXTRACT_SCRIPT
 
 if [ $? -ne 0 ]; then
-    echo "❌ Failed to download source model"
+    echo "❌ Failed to extract source model"
+    rm -rf "$LOCAL_TEMP"
     exit 1
 fi
+
+# Cleanup
+rm -rf "$LOCAL_TEMP"
 
 echo "✅ Source model downloaded and extracted"
 echo ""
