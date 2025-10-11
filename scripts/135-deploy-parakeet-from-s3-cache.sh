@@ -285,6 +285,7 @@ echo ""
 echo "Step 5/6: Starting RIVA server..."
 
 # Stop existing container and start new one
+# Note: Mount must match hardcoded paths in nemo_config.json
 START_CMD="docker stop riva-server 2>/dev/null || true && \\
 docker rm riva-server 2>/dev/null || true && \\
 docker run -d --gpus all --name riva-server \\
@@ -292,9 +293,9 @@ docker run -d --gpus all --name riva-server \\
   -p ${RIVA_HTTP_PORT}:8000 \\
   -p 8001:8001 \\
   -p 8002:8002 \\
-  -v ${MODEL_REPO_DIR}:/data/models \\
+  -v ${MODEL_REPO_DIR}:${MODEL_REPO_DIR} \\
   nvcr.io/nvidia/riva/riva-speech:${RIVA_VERSION} \\
-  bash -c 'tritonserver --model-repository=/data/models --cuda-memory-pool-byte-size=0:8000000000 --log-info=true --exit-on-error=false & sleep 20 && /opt/riva/bin/riva_server --asr_service=true --nlp_service=false --tts_service=false & wait'"
+  bash -c 'tritonserver --model-repository=/opt/riva/models_parakeet --cuda-memory-pool-byte-size=0:8000000000 --log-info=true --exit-on-error=false & sleep 20 && /opt/riva/bin/riva_server --asr_service=true --nlp_service=false --tts_service=false & wait'"
 
 echo "Starting container..."
 ssh $SSH_OPTS "${REMOTE_USER}@${GPU_INSTANCE_IP}" "$START_CMD"
